@@ -58,6 +58,56 @@ async def test_agent_with_mock_issue(req: TestIssueRequest, db: Session = Depend
     return JSONResponse(result)
 
 
+class RunRealPipelineRequest(BaseModel):
+    repo: str = Field(..., description="owner/repo of the target issue, e.g. 'titraio/titra'")
+    issue_number: int = Field(..., description="An existing, real issue number in that repo")
+
+
+@router.post("/run")
+async def run_real_pipeline(req: RunRealPipelineRequest, db: Session = Depends(get_db)):
+    """
+    Manually triggers the FULL agent pipeline (real repo inspection,
+    branch creation, commits, and PR) for a specific existing GitHub
+    issue -- without requiring a webhook.
+
+    This exists because adding a webhook requires admin access to the
+    target repo, which you won't have on external open-source projects.
+    This endpoint lets you point DevInbox at any public issue directly;
+    if you don't have write access to the repo, the orchestrator
+    automatically forks it and opens a cross-repo PR back to upstream.
+    """
+    from ..services.agent_orchestrator import AgentOrchestrator
+    from .webhook import _build_oss_service
+
+    km = get_key_manager()
+    settings = get_settings()
+
+    if not km.has_keys("qwen") or not km.has_keys("github"):
+        return JSONResponse({"success": False, "message": "Qwen and/or GitHub keys not configured"}, status_code=400)
+
+    github = GitHubService(km.get_github_token())
+
+    try:
+        repo = github.get_repository(req.repo)
+        gh_issue = repo.get_issue(number=req.issue_number)
+    except Exception as e:
+        return JSONResponse({"success": False, "message": f"Could not fetch issue: {e}"}, status_code=400)
+
+    qwen = QwenService(km.get_qwen_api_key(), km.get_qwen_base_url() or settings.QWEN_BASE_URL, km.get_qwen_model() or settings.QWEN_MODEL)
+    oss = _build_oss_service(km)
+    orchestrator = AgentOrchestrator(qwen, github, db, oss_service=oss)
+
+    result = orchestrator.process_issue(
+        repo_full_name=req.repo,
+        issue_number=req.issue_number,
+        title=gh_issue.title,
+        body=gh_issue.body or "",
+        author=gh_issue.user.login if gh_issue.user else "unknown",
+        labels=[l.name for l in gh_issue.labels],
+    )
+    return JSONResponse(result)
+
+
 @router.get("/health")
 async def agent_health_check():
     settings = get_settings()
