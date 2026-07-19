@@ -221,7 +221,7 @@ then respond with the final JSON object described above and nothing else."""
         classification: str,
         tool_executor,
         repository_context: Optional[str] = None,
-        max_tool_iterations: int = 5,
+        max_tool_iterations: int = 10,
     ) -> Dict[str, Any]:
         """Like generate_solution, but lets Qwen call search_repo/read_file to
         inspect the repository before proposing a fix.
