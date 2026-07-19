@@ -1,0 +1,12 @@
+{
+  "name": "devinbox-frontend-build",
+  "private": true,
+  "description": "Compiles the dashboard's Tailwind CSS into a static production bundle so the app doesn't rely on the cdn.tailwindcss.com dev script.",
+  "scripts": {
+    "build:css": "tailwindcss -c tailwind.config.js -i tailwind-input.css -o app/static/css/tailwind.css --minify",
+    "watch:css": "tailwindcss -c tailwind.config.js -i tailwind-input.css -o app/static/css/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.19"
+  }
+}

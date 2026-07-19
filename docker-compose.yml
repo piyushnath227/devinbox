@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: devinbox-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=DevInbox
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=8000
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - DATABASE_URL=sqlite:///./data/devinbox.db
+      - QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+      - QWEN_MODEL=qwen3.7-plus
+      - QWEN_MAX_TOKENS=4096
+      - QWEN_TEMPERATURE=0.2
+      - KEYS_DIR=./data/keys
+    volumes:
+      - devinbox_data:/app/data
+    networks:
+      - devinbox-network
+
+volumes:
+  devinbox_data:
+
+networks:
+  devinbox-network:
+    driver: bridge
