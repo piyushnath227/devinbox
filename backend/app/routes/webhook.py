@@ -41,7 +41,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, db
     payload = json.loads(raw_body)
     event_type = request.headers.get("X-GitHub-Event", "")
 
-    logger.info("webhook_received", event=event_type)
+    logger.info("webhook_received", event_type=event_type)
 
     if event_type == "ping":
         return JSONResponse({"status": "ok", "message": "Webhook configured successfully"})
