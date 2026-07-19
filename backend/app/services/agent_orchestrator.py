@@ -100,8 +100,32 @@ class AgentOrchestrator:
                 metadata=solution, tokens_used=sol_result.get("tokens_used"), latency_ms=sol_result.get("latency_ms"),
             )
 
-            # Create the fix branch and commit changes
-            branch_result = self.github.create_fix_branch(repo_full_name, issue_number)
+            # Create the fix branch and commit changes.
+            # If we don't have direct write access to this repo (e.g. it's
+            # an external open-source project), fork it first and work on
+            # the fork, then open a cross-repo PR back to upstream --
+            # the standard open-source contribution workflow.
+            work_repo = repo_full_name
+            head_owner = None
+
+            if not self.github.has_write_access(repo_full_name):
+                self._log(issue, "fork_required", f"No write access to {repo_full_name}; forking instead")
+                fork_result = self.github.fork_repo(repo_full_name)
+                if not fork_result["success"]:
+                    self._fail(issue, f"Fork failed: {fork_result.get('error')}")
+                    return self._result(issue, "failed", start_time)
+
+                work_repo = fork_result["fork_full_name"]
+                head_owner = work_repo.split("/")[0]
+                base_branch = fork_result["default_branch"]
+
+                if not self.github.wait_for_fork_ready(work_repo, base_branch):
+                    self._fail(issue, "Fork was created but isn't ready yet (timed out waiting)")
+                    return self._result(issue, "failed", start_time)
+
+                self._log(issue, "fork_ready", f"Working on fork: {work_repo}")
+
+            branch_result = self.github.create_fix_branch(work_repo, issue_number)
             if not branch_result["success"]:
                 self._fail(issue, f"Branch creation failed: {branch_result.get('error')}")
                 self.github.post_comment(repo_full_name, issue_number, f"❌ Failed to create branch: {branch_result.get('error')}")
@@ -110,17 +134,18 @@ class AgentOrchestrator:
             issue.branch_name = branch_result["branch_name"]
             for change in solution.get("changes", []):
                 self.github.commit_changes(
-                    repo_full_name, issue.branch_name, change.get("file", ""),
+                    work_repo, issue.branch_name, change.get("file", ""),
                     self._extract_content_from_diff(change.get("code_diff", "")),
                     f"fix: {title[:72]} (Issue #{issue_number})",
                 )
                 self._archive_diff_to_oss(repo_full_name, issue_number, change)
 
-            # Open the draft PR for human review
+            # Open the draft PR for human review. If we worked on a fork,
+            # this opens a cross-repo PR: fork:branch -> upstream:main.
             pr_body = self._build_pr_description(issue, solution)
             pr_title = f"🤖 [DevInbox] Fix: {title[:60]} (Closes #{issue_number})"
             pr_result = self.github.create_pull_request(
-                repo_full_name, issue.branch_name, pr_title, pr_body, draft=True
+                repo_full_name, issue.branch_name, pr_title, pr_body, draft=True, head_owner=head_owner
             )
             if not pr_result["success"]:
                 self._fail(issue, f"PR creation failed: {pr_result.get('error')}")
