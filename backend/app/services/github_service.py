@@ -84,6 +84,46 @@ class GitHubService:
             logger.warning("structure_fetch_failed", error=str(e))
             return {"repository": repo_full_name, "error": str(e), "files": []}
 
+    def has_write_access(self, repo_full_name: str) -> bool:
+        """Check whether the authenticated token can push directly to this
+        repo. If not, we need to fork it instead of branching directly."""
+        try:
+            repo = self.get_repository(repo_full_name)
+            perms = repo.permissions
+            return bool(perms and (perms.push or perms.admin))
+        except GithubException as e:
+            logger.warning("permission_check_failed", repo=repo_full_name, error=str(e))
+            return False
+
+    def fork_repo(self, repo_full_name: str) -> Dict[str, Any]:
+        """Fork repo_full_name into the authenticated user's account.
+        If a fork already exists, GitHub's API returns the existing one
+        rather than erroring, so this is safe to call repeatedly."""
+        try:
+            upstream = self.get_repository(repo_full_name)
+            fork = upstream.create_fork()
+            fork_full_name = f"{self.authenticated_user}/{fork.name}"
+            logger.info("repo_forked", upstream=repo_full_name, fork=fork_full_name)
+            return {"success": True, "fork_full_name": fork_full_name, "default_branch": upstream.default_branch}
+        except GithubException as e:
+            logger.error("fork_failed", repo=repo_full_name, error=str(e))
+            return {"success": False, "error": str(e)}
+
+    def wait_for_fork_ready(self, fork_full_name: str, base_branch: str, timeout_s: int = 30) -> bool:
+        """Forks aren't instantly queryable -- GitHub creates them
+        asynchronously. Poll briefly until the base branch ref exists."""
+        import time
+        elapsed = 0
+        while elapsed < timeout_s:
+            try:
+                repo = self.get_repository(fork_full_name)
+                repo.get_git_ref(f"heads/{base_branch}")
+                return True
+            except GithubException:
+                time.sleep(2)
+                elapsed += 2
+        return False
+
     def create_fix_branch(self, repo_full_name: str, issue_number: int, base_branch: str = "main") -> Dict[str, Any]:
         try:
             repo = self.get_repository(repo_full_name)
@@ -114,11 +154,31 @@ class GitHubService:
             logger.error("commit_failed", file=file_path, error=str(e))
             return {"success": False, "error": str(e)}
 
-    def create_pull_request(self, repo_full_name: str, branch_name: str, title: str, body: str, base_branch: str = "main", draft: bool = True) -> Dict[str, Any]:
+    def create_pull_request(
+        self,
+        repo_full_name: str,
+        branch_name: str,
+        title: str,
+        body: str,
+        base_branch: str = "main",
+        draft: bool = True,
+        head_owner: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        If head_owner is provided, this opens a CROSS-REPO pull request:
+        the PR is opened against `repo_full_name` (the upstream repo),
+        with the head set to "head_owner:branch_name" (a branch on the
+        contributor's fork). This is the standard open-source
+        fork-and-PR contribution model.
+
+        If head_owner is None (default), behavior is unchanged from
+        before: a same-repo PR, for repos we have direct write access to.
+        """
         try:
             repo = self.get_repository(repo_full_name)
-            pr = repo.create_pull(title=title, body=body, head=branch_name, base=base_branch, draft=draft)
-            logger.info("pr_created", repo=repo_full_name, pr_number=pr.number)
+            head = f"{head_owner}:{branch_name}" if head_owner else branch_name
+            pr = repo.create_pull(title=title, body=body, head=head, base=base_branch, draft=draft)
+            logger.info("pr_created", repo=repo_full_name, pr_number=pr.number, cross_repo=bool(head_owner))
             return {"success": True, "pr_number": pr.number, "pr_url": pr.html_url}
         except GithubException as e:
             logger.error("pr_creation_failed", error=str(e))
