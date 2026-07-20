@@ -1,7 +1,7 @@
 # DevInbox — 3-Minute Demo Video Script
 
 **0:00–0:20 — Intro**
-"Hi, I'm [Name] and this is DevInbox — an AI-powered Issue-to-PR Autopilot built on Qwen Cloud."
+"Hi, I'm Piyush and this is DevInbox — an AI-powered Issue-to-PR Autopilot built on Qwen Cloud."
 "Maintainers spend huge amounts of time triaging issues. DevInbox automates that, end to end, with a human always making the final call."
 
 **0:20–0:45 — Dashboard setup**
