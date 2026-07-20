@@ -1,7 +1,7 @@
 """Coordinates the full issue-to-PR pipeline:
 
 RECEIVED -> ANALYZING -> CLASSIFIED -> GENERATING -> PR_CREATED -> MERGED
-                                   \\-> CLOSED (spam / out_of_scope)
+                                    \-> CLOSED (spam / out_of_scope)
 
 All generated code lands in a draft PR; merging requires a maintainer to
 comment "/approve".
@@ -62,7 +62,14 @@ class AgentOrchestrator:
                 self._fail(issue, f"Classification failed: {cls_result.get('error')}")
                 return self._result(issue, "failed", start_time)
 
-            classification = json.loads(cls_result["content"])
+            # FIX #1: Wrap json.loads with proper error handling
+            try:
+                classification = json.loads(cls_result["content"])
+            except json.JSONDecodeError as e:
+                logger.error("classification_json_parse_failed", error=str(e))
+                self._fail(issue, f"Invalid JSON from classification: {e}")
+                return self._result(issue, "failed", start_time)
+
             issue.classification = classification.get("classification")
             issue.classification_confidence = classification.get("confidence", 0)
             issue.summary = classification.get("reasoning", "")
@@ -88,7 +95,14 @@ class AgentOrchestrator:
                 self._fail(issue, f"Solution generation failed: {sol_result.get('error')}")
                 return self._result(issue, "failed", start_time)
 
-            solution = json.loads(sol_result["content"])
+            # FIX #1: Wrap json.loads with proper error handling
+            try:
+                solution = json.loads(sol_result["content"])
+            except json.JSONDecodeError as e:
+                logger.error("solution_json_parse_failed", error=str(e))
+                self._fail(issue, f"Invalid JSON from solution generation: {e}")
+                return self._result(issue, "failed", start_time)
+
             issue.solution_plan = solution.get("solution_approach", "")
             issue.language = solution.get("primary_language", "")
             issue.modified_files = solution.get("files_to_modify", [])
@@ -119,8 +133,10 @@ class AgentOrchestrator:
                 head_owner = work_repo.split("/")[0]
                 base_branch = fork_result["default_branch"]
 
-                if not self.github.wait_for_fork_ready(work_repo, base_branch):
-                    self._fail(issue, "Fork was created but isn't ready yet (timed out waiting)")
+                # FIX #3: Increase fork wait timeout and add retry logic
+                if not self.github.wait_for_fork_ready(work_repo, base_branch, timeout_s=60):
+                    self._fail(issue, "Fork was created but isn't ready yet (timed out waiting after 60s)")
+                    self._log(issue, "fork_timeout", f"Fork {work_repo} did not become ready in time")
                     return self._result(issue, "failed", start_time)
 
                 self._log(issue, "fork_ready", f"Working on fork: {work_repo}")
@@ -171,8 +187,12 @@ class AgentOrchestrator:
             self._archive_snapshot_to_oss(issue)
             return self._result(issue, "success", start_time)
 
+        except json.JSONDecodeError as e:
+            logger.error("processing_json_error", issue_number=issue_number, error=str(e))
+            self._fail(issue, f"JSON parsing error: {e}")
+            return self._result(issue, "failed", start_time)
         except Exception as e:
-            logger.error("processing_unexpected_error", issue_number=issue_number, error=str(e))
+            logger.error("processing_unexpected_error", issue_number=issue_number, error=str(e), exc_info=True)
             self._fail(issue, f"Unexpected error: {e}")
             return self._result(issue, "failed", start_time)
 
@@ -244,13 +264,16 @@ class AgentOrchestrator:
         self._log(issue, "error", description, level="error", is_success=False)
 
     def _log(self, issue, action_type, description, metadata=None, level="info", is_success=True, tokens_used=None, latency_ms=None):
-        entry = ActivityLog(
-            issue_id=issue.id, action_type=action_type, description=description,
-            log_metadata=metadata or {}, level=level, is_success=is_success,
-            tokens_used=tokens_used, latency_ms=latency_ms,
-        )
-        self.db.add(entry)
-        self.db.commit()
+        try:
+            entry = ActivityLog(
+                issue_id=issue.id, action_type=action_type, description=description,
+                log_metadata=metadata or {}, level=level, is_success=is_success,
+                tokens_used=tokens_used, latency_ms=latency_ms,
+            )
+            self.db.add(entry)
+            self.db.commit()
+        except Exception as e:
+            logger.error("activity_log_failed", error=str(e))
 
     def _get_repository_context(self, repo_full_name: str) -> Optional[str]:
         try:
@@ -261,12 +284,14 @@ class AgentOrchestrator:
             for f in structure.get("files", [])[:30]:
                 lines.append(f"  - {f['path']} ({f['type']})")
             return "\n".join(lines)
-        except Exception:
+        except Exception as e:
+            logger.warning("repository_context_error", error=str(e))
             return None
 
     def _make_tool_executor(self, repo_full_name: str):
         """Build a tool_executor(name, args) -> str closure bound to this repo."""
         def executor(tool_name: str, args: dict) -> str:
+            # FIX #8: Catch specific exceptions instead of generic Exception
             try:
                 if tool_name == "search_repo":
                     result = self.github.search_code(repo_full_name, args.get("query", ""))
@@ -274,8 +299,12 @@ class AgentOrchestrator:
                     result = self.github.read_file(repo_full_name, args.get("path", ""))
                 else:
                     result = {"success": False, "error": f"Unknown tool '{tool_name}'"}
+            except ValueError as e:
+                logger.error("tool_executor_value_error", tool=tool_name, error=str(e))
+                result = {"success": False, "error": f"Invalid tool arguments: {e}"}
             except Exception as e:
-                result = {"success": False, "error": str(e)}
+                logger.error("tool_executor_error", tool=tool_name, error=str(e))
+                result = {"success": False, "error": f"Tool execution failed: {e}"}
             return json.dumps(result)
         return executor
 
@@ -298,14 +327,25 @@ class AgentOrchestrator:
             logger.warning("oss_snapshot_archive_error", error=str(e))
 
     def _extract_content_from_diff(self, diff_text: str) -> str:
+        """FIX #4: Improved diff extraction with better validation."""
+        if not diff_text:
+            return ""
+        
         lines = diff_text.split("\n")
         content_lines = []
+        
         for line in lines:
-            if line.startswith("+") and not line.startswith("+++"):
+            # Skip diff metadata lines
+            if line.startswith(("---", "+++==", "@@", "diff ", "index ")):
+                continue
+            # Extract added lines (without the leading +)
+            elif line.startswith("+") and not line.startswith("+++"):
                 content_lines.append(line[1:])
-            elif not line.startswith(("-", "---", "@@", "diff", "index")):
+            # Include context lines (those without special prefixes)
+            elif not line.startswith("-"):
                 content_lines.append(line)
-        return "\n".join(content_lines)
+        
+        return "\n".join(content_lines).strip()
 
     def _build_pr_description(self, issue: IssueRecord, solution: dict) -> str:
         files = "\n".join(f"- `{f}`" for f in solution.get("files_to_modify", []))

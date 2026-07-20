@@ -102,35 +102,49 @@ def _build_oss_service(km) -> Optional[AlibabaOSSService]:
 
 
 def process_issue_background(repo_full_name, issue_number, title, body, author, labels, db: Session):
+    """FIX #2: Improved error handling in background tasks with better logging."""
     try:
         km = get_key_manager()
         settings = get_settings()
         qwen_key = km.get_qwen_api_key()
         github_token = km.get_github_token()
         if not qwen_key or not github_token:
-            logger.error("background_processing_missing_keys")
+            logger.error("background_processing_missing_keys", repo=repo_full_name, issue=issue_number)
             return
 
-        qwen = QwenService(qwen_key, km.get_qwen_base_url() or settings.QWEN_BASE_URL, km.get_qwen_model() or settings.QWEN_MODEL)
-        github = GitHubService(github_token)
+        try:
+            qwen = QwenService(qwen_key, km.get_qwen_base_url() or settings.QWEN_BASE_URL, km.get_qwen_model() or settings.QWEN_MODEL)
+            github = GitHubService(github_token)
+        except ValueError as e:
+            logger.error("background_service_init_failed", repo=repo_full_name, issue=issue_number, error=str(e))
+            return
+        
         oss = _build_oss_service(km)
         orchestrator = AgentOrchestrator(qwen, github, db, oss_service=oss)
         orchestrator.process_issue(repo_full_name, issue_number, title, body, author, labels)
     except Exception as e:
-        logger.error("background_processing_error", error=str(e))
+        logger.error("background_processing_error", repo=repo_full_name, issue=issue_number, error=str(e), exc_info=True)
 
 
 def check_and_merge_background(repo_full_name, db: Session):
+    """FIX #2: Improved error handling in background tasks."""
     try:
         km = get_key_manager()
         settings = get_settings()
         github_token = km.get_github_token()
         if not github_token:
+            logger.error("background_merge_missing_github_token", repo=repo_full_name)
             return
-        github = GitHubService(github_token)
-        qwen = QwenService(km.get_qwen_api_key() or "", km.get_qwen_base_url() or settings.QWEN_BASE_URL)
+        
+        try:
+            github = GitHubService(github_token)
+            qwen = QwenService(km.get_qwen_api_key() or "", km.get_qwen_base_url() or settings.QWEN_BASE_URL)
+        except ValueError as e:
+            logger.error("background_merge_service_init_failed", repo=repo_full_name, error=str(e))
+            return
+        
         oss = _build_oss_service(km)
         orchestrator = AgentOrchestrator(qwen, github, db, oss_service=oss)
         orchestrator.check_and_merge_approved_prs(repo_full_name)
     except Exception as e:
-        logger.error("background_merge_error", error=str(e))
+        logger.error("background_merge_error", repo=repo_full_name, error=str(e), exc_info=True)
