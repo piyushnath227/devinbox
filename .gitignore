@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# Environment / secrets
+.env
+.env.*.local
+data/
+backend/data/
+*.enc
+.salt
+*.db
+*.sqlite3
+
+# Node (Tailwind build tooling)
+node_modules/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

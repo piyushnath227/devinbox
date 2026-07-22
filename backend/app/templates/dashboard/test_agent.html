@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Test Agent{% endblock %}
+{% block content %}
+<div class="mb-8">
+    <h2 class="text-2xl font-bold text-white flex items-center gap-2"><i data-lucide="flask-conical" class="w-6 h-6 text-primary-400"></i> Test Agent</h2>
+    <p class="text-gray-400 mt-1">Submit a test issue to see how the agent classifies and solves it — no GitHub needed.</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-6">
+        <label class="block text-sm font-medium text-gray-300 mb-2">Issue Title</label>
+        <input id="test-title" class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white mb-4"
+               value="Bug: Login fails when password contains @ symbol">
+        <label class="block text-sm font-medium text-gray-300 mb-2">Issue Body</label>
+        <textarea id="test-body" rows="8" class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm mb-4">When users attempt to login with passwords containing '@', authentication fails with a 500 error.
+
+Steps to reproduce:
+1. Create user with password: Test@123
+2. Try to login
+3. See 500 error in console</textarea>
+        <button onclick="runTestAgent()" id="test-submit-btn" class="w-full px-4 py-3 bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-lg flex items-center justify-center gap-2">
+            <i data-lucide="rocket" class="w-4 h-4"></i> Run Agent Analysis
+        </button>
+    </div>
+
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-6" style="animation-delay:80ms">
+        <h3 class="text-lg font-semibold text-white mb-4 flex items-center gap-2"><i data-lucide="search-code" class="w-4 h-4 text-primary-400"></i> Results</h3>
+        <div id="results-container">
+            <p id="results-empty" class="text-gray-400 text-sm">Fill in the issue details and run the agent to see results here.</p>
+            <pre id="results-content" class="hidden text-xs text-gray-300 whitespace-pre-wrap"></pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function runTestAgent() {
+    const btn = document.getElementById('test-submit-btn');
+    const title = document.getElementById('test-title').value.trim();
+    const body = document.getElementById('test-body').value.trim();
+    const resultsEmpty = document.getElementById('results-empty');
+    const resultsContent = document.getElementById('results-content');
+
+    if (!title || !body) return showToast('Please fill in both fields', 'warning');
+
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Processing...';
+    lucide.createIcons();
+
+    try {
+        const result = await apiRequest('/api/agent/test', {
+            method: 'POST',
+            body: JSON.stringify({ title, body, labels: ['bug'], repo: 'test/demo-repo' })
+        });
+        resultsEmpty.classList.add('hidden');
+        resultsContent.classList.remove('hidden');
+        resultsContent.textContent = JSON.stringify(result, null, 2);
+    } catch (e) {
+        showToast(e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="rocket" class="w-4 h-4"></i> Run Agent Analysis';
+        lucide.createIcons();
+    }
+}
+</script>
+{% endblock %}

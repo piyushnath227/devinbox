@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}API Keys{% endblock %}
+{% block content %}
+<div class="mb-8">
+    <h2 class="text-2xl font-bold text-white flex items-center gap-2"><i data-lucide="key-round" class="w-6 h-6 text-primary-400"></i> API Keys</h2>
+    <p class="text-gray-400 mt-1">Configure your Qwen Cloud and GitHub keys. Encrypted at rest — never touch code.</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="cloud" class="w-4 h-4"></i> Qwen Cloud</h3>
+            <span id="qwen-status" class="px-2.5 py-1 rounded-full text-xs font-medium {% if qwen_configured %}bg-green-900/50 text-green-400{% else %}bg-yellow-900/50 text-yellow-400{% endif %}">
+                {{ 'Configured' if qwen_configured else 'Not Configured' }}
+            </span>
+        </div>
+        <div class="p-6 space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">API Key</label>
+                <input type="password" id="qwen-api-key" placeholder="sk-..."
+                       class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <p class="mt-1 text-xs text-gray-500">Get your key at home.qwencloud.com/api-keys</p>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
+                <input type="text" id="qwen-base-url" value="{{ qwen_base_url }}"
+                       class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Model</label>
+                <select id="qwen-model" class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white text-sm">
+                    <option value="qwen3.7-plus" {% if qwen_model=='qwen3.7-plus' %}selected{% endif %}>qwen3.7-plus (Balanced)</option>
+                    <option value="qwen3.7-max" {% if qwen_model=='qwen3.7-max' %}selected{% endif %}>qwen3.7-max (Complex Reasoning)</option>
+                </select>
+            </div>
+            <div class="flex gap-3 pt-2">
+                <button onclick="saveKeys('qwen')" class="flex-1 px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
+                <button onclick="testKeys('qwen')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
+            </div>
+            <div id="qwen-test-result" class="hidden p-3 rounded-lg text-sm"></div>
+        </div>
+    </div>
+
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="github" class="w-4 h-4"></i> GitHub</h3>
+            <span id="github-status" class="px-2.5 py-1 rounded-full text-xs font-medium {% if github_configured %}bg-green-900/50 text-green-400{% else %}bg-yellow-900/50 text-yellow-400{% endif %}">
+                {{ 'Configured' if github_configured else 'Not Configured' }}
+            </span>
+        </div>
+        <div class="p-6 space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Personal Access Token</label>
+                <input type="password" id="github-token" placeholder="ghp_..."
+                       class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <p class="mt-1 text-xs text-gray-500">Create at GitHub → Settings → Developer settings → Tokens (needs <code>repo</code> scope)</p>
+            </div>
+            <div class="flex gap-3 pt-2">
+                <button onclick="saveKeys('github')" class="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
+                <button onclick="testKeys('github')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
+            </div>
+            <div id="github-test-result" class="hidden p-3 rounded-lg text-sm"></div>
+        </div>
+    </div>
+
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden lg:col-span-2">
+        <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="database" class="w-4 h-4"></i> Alibaba Cloud OSS <span class="text-xs font-normal text-gray-500">(optional — audit trail archival)</span></h3>
+            <span id="alibaba-status" class="px-2.5 py-1 rounded-full text-xs font-medium {% if alibaba_configured %}bg-green-900/50 text-green-400{% else %}bg-yellow-900/50 text-yellow-400{% endif %}">
+                {{ 'Configured' if alibaba_configured else 'Not Configured' }}
+            </span>
+        </div>
+        <div class="p-6 space-y-4">
+            <p class="text-xs text-gray-500">Every classification, generated diff, and PR decision is archived as JSON to an OSS bucket, giving you a durable off-box audit trail. Create a RAM user with <code>AliyunOSSFullAccess</code> at the Alibaba Cloud console.</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">AccessKey ID</label>
+                    <input type="text" id="alibaba-access-key-id" placeholder="LTAI..."
+                           class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">AccessKey Secret</label>
+                    <input type="password" id="alibaba-access-key-secret" placeholder="••••••••"
+                           class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">OSS Endpoint</label>
+                    <input type="text" id="alibaba-endpoint" value="{{ alibaba_endpoint }}"
+                           class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Bucket Name</label>
+                    <input type="text" id="alibaba-bucket" placeholder="devinbox-audit-trail"
+                           class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
+                </div>
+            </div>
+            <div class="flex gap-3 pt-2">
+                <button onclick="saveKeys('alibaba')" class="flex-1 px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
+                <button onclick="testKeys('alibaba')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
+            </div>
+            <div id="alibaba-test-result" class="hidden p-3 rounded-lg text-sm"></div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-8 p-4 bg-surface-900 border border-yellow-800 rounded-xl animate-fade-in">
+    <h4 class="text-sm font-medium text-yellow-400 flex items-center gap-2"><i data-lucide="shield-check" class="w-4 h-4"></i> Security</h4>
+    <p class="text-xs text-gray-400 mt-1">Keys are encrypted at rest with Fernet (AES-256) and never logged or returned in full.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function saveKeys(service) {
+    let keys = {};
+    if (service === 'qwen') {
+        const apiKey = document.getElementById('qwen-api-key').value.trim();
+        if (!apiKey) return showToast('Please enter your Qwen Cloud API key', 'error');
+        keys = { api_key: apiKey, base_url: document.getElementById('qwen-base-url').value.trim(), model: document.getElementById('qwen-model').value };
+    } else if (service === 'github') {
+        const token = document.getElementById('github-token').value.trim();
+        if (!token) return showToast('Please enter your GitHub token', 'error');
+        keys = { token };
+    } else if (service === 'alibaba') {
+        const accessKeyId = document.getElementById('alibaba-access-key-id').value.trim();
+        const accessKeySecret = document.getElementById('alibaba-access-key-secret').value.trim();
+        const bucket = document.getElementById('alibaba-bucket').value.trim();
+        if (!accessKeyId || !accessKeySecret || !bucket) return showToast('Please fill in AccessKey ID, Secret, and Bucket', 'error');
+        keys = { access_key_id: accessKeyId, access_key_secret: accessKeySecret, endpoint: document.getElementById('alibaba-endpoint').value.trim(), bucket };
+    }
+    try {
+        const result = await apiRequest('/dashboard/api/keys/save', { method: 'POST', body: JSON.stringify({ service, keys }) });
+        if (result.success) {
+            const badge = document.getElementById(`${service}-status`);
+            badge.className = 'px-2.5 py-1 rounded-full text-xs font-medium bg-green-900/50 text-green-400';
+            badge.textContent = 'Configured';
+            const labels = { qwen: 'Qwen Cloud', github: 'GitHub', alibaba: 'Alibaba Cloud OSS' };
+            showToast(`${labels[service] || service} keys saved!`, 'success');
+        }
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function testKeys(service) {
+    const resultDiv = document.getElementById(`${service}-test-result`);
+    resultDiv.classList.remove('hidden');
+    resultDiv.innerHTML = '<span class="inline-flex items-center gap-1"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Testing...</span>';
+    lucide.createIcons();
+    try {
+        const result = await apiRequest(`/dashboard/api/keys/test/${service}`);
+        const icon = result.success ? 'check-circle' : 'x-circle';
+        const message = result.success ? 'Connection successful!' : (result.error || result.message || 'Connection failed');
+        resultDiv.className = `p-3 rounded-lg text-sm ${result.success ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`;
+        resultDiv.innerHTML = `<span class="inline-flex items-center gap-1"><i data-lucide="${icon}" class="w-4 h-4"></i> ${message}</span>`;
+    } catch (e) {
+        resultDiv.className = 'p-3 rounded-lg text-sm bg-red-900/50 text-red-400';
+        resultDiv.innerHTML = `<span class="inline-flex items-center gap-1"><i data-lucide="x-circle" class="w-4 h-4"></i> ${e.message}</span>`;
+    } finally {
+        lucide.createIcons();
+    }
+}
+</script>
+{% endblock %}

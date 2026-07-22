@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="mb-8">
+    <h2 class="text-2xl font-bold text-white flex items-center gap-2"><i data-lucide="layout-dashboard" class="w-6 h-6 text-primary-400"></i> Overview</h2>
+    <p class="text-gray-400 mt-1">System status and processing statistics.</p>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-5" style="animation-delay:0ms">
+        <p class="text-sm text-gray-400">Total Issues</p>
+        <p class="text-3xl font-bold text-white mt-1">{{ stats.total_issues }}</p>
+    </div>
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-5" style="animation-delay:60ms">
+        <p class="text-sm text-gray-400">PRs Created</p>
+        <p class="text-3xl font-bold text-white mt-1">{{ stats.pr_created }}</p>
+    </div>
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-5" style="animation-delay:120ms">
+        <p class="text-sm text-gray-400">Merged</p>
+        <p class="text-3xl font-bold text-green-400 mt-1">{{ stats.merged }}</p>
+    </div>
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-5" style="animation-delay:180ms">
+        <p class="text-sm text-gray-400">Failed</p>
+        <p class="text-3xl font-bold text-red-400 mt-1">{{ stats.failed }}</p>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden lg:col-span-2" style="animation-delay:220ms">
+        <div class="px-6 py-4 border-b border-gray-800">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="trending-up" class="w-4 h-4 text-primary-400"></i> Issue Activity (Last 14 Days)</h3>
+        </div>
+        <div class="p-6">
+            <canvas id="trendChart" height="90"></canvas>
+        </div>
+    </div>
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden" style="animation-delay:260ms">
+        <div class="px-6 py-4 border-b border-gray-800">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="pie-chart" class="w-4 h-4 text-primary-400"></i> Status Breakdown</h3>
+        </div>
+        <div class="p-6">
+            <canvas id="statusChart" height="180"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden" style="animation-delay:300ms">
+        <div class="px-6 py-4 border-b border-gray-800">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="server" class="w-4 h-4 text-primary-400"></i> System Status</h3>
+        </div>
+        <div class="p-6 space-y-4">
+            <div class="flex items-center justify-between p-3 bg-surface-800 rounded-lg">
+                <span class="text-sm font-medium text-white flex items-center gap-2"><i data-lucide="cloud" class="w-4 h-4 text-gray-400"></i> Qwen Cloud</span>
+                <span class="px-2.5 py-1 rounded-full text-xs font-medium {% if qwen_configured %}bg-green-900/50 text-green-400{% else %}bg-red-900/50 text-red-400{% endif %}">
+                    {{ 'Connected' if qwen_configured else 'Not Configured' }}
+                </span>
+            </div>
+            <div class="flex items-center justify-between p-3 bg-surface-800 rounded-lg">
+                <span class="text-sm font-medium text-white flex items-center gap-2"><i data-lucide="github" class="w-4 h-4 text-gray-400"></i> GitHub</span>
+                <span class="px-2.5 py-1 rounded-full text-xs font-medium {% if github_configured %}bg-green-900/50 text-green-400{% else %}bg-red-900/50 text-red-400{% endif %}">
+                    {{ 'Connected' if github_configured else 'Not Configured' }}
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden" style="animation-delay:340ms">
+        <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="activity" class="w-4 h-4 text-primary-400"></i> Recent Activity</h3>
+            <a href="/dashboard/activity" class="text-sm text-primary-400 hover:text-primary-300">View All →</a>
+        </div>
+        <div class="p-4">
+            {% if recent_activity %}
+            <div class="space-y-2 max-h-[320px] overflow-y-auto">
+                {% for log in recent_activity %}
+                <div class="p-3 rounded-lg hover:bg-surface-800">
+                    <p class="text-sm text-white">{{ log.description }}</p>
+                    <p class="text-xs text-gray-500 mt-1">{{ log.action_type | replace('_',' ') | title }}</p>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center py-8">
+                <p class="text-gray-400">No activity yet.</p>
+                <p class="text-sm text-gray-500 mt-1">Configure your keys and create a test issue to get started.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% if not qwen_configured or not github_configured %}
+<div class="mt-8 p-5 bg-yellow-900/20 border border-yellow-800 rounded-xl">
+    <h3 class="text-lg font-semibold text-yellow-400 flex items-center gap-2"><i data-lucide="rocket" class="w-5 h-5"></i> Quick Setup Required</h3>
+    <p class="text-sm text-gray-400 mt-1">Configure your API keys to start using DevInbox.</p>
+    <a href="/dashboard/keys" class="inline-block mt-3 px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded-lg text-sm">Go to API Keys →</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+    const chartFont = { family: 'Inter', size: 11 };
+    Chart.defaults.color = '#94a3b8';
+    Chart.defaults.font = chartFont;
+
+    new Chart(document.getElementById('trendChart'), {
+        type: 'line',
+        data: {
+            labels: {{ trend_labels | tojson }},
+            datasets: [{
+                label: 'Issues Received',
+                data: {{ trend_counts | tojson }},
+                borderColor: '#818cf8',
+                backgroundColor: 'rgba(129, 140, 248, 0.15)',
+                fill: true,
+                tension: 0.35,
+                pointRadius: 3,
+                pointBackgroundColor: '#818cf8',
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { grid: { display: false } },
+                y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(148,163,184,0.1)' } }
+            }
+        }
+    });
+
+    new Chart(document.getElementById('statusChart'), {
+        type: 'doughnut',
+        data: {
+            labels: ['PR Created', 'Merged', 'Failed'],
+            datasets: [{
+                data: [{{ stats.pr_created }}, {{ stats.merged }}, {{ stats.failed }}],
+                backgroundColor: ['#818cf8', '#4ade80', '#f87171'],
+                borderColor: '#0f172a',
+                borderWidth: 2,
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }
+        }
+    });
+</script>
+{% endblock %}

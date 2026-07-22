@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: devinbox-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=DevInbox
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=8000
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - DATABASE_URL=sqlite:///./data/devinbox.db
+      - QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+      - QWEN_MODEL=qwen3.7-plus
+      - QWEN_MAX_TOKENS=4096
+      - QWEN_TEMPERATURE=0.2
+      - KEYS_DIR=./data/keys
+      - REDIS_URL=redis://redis:6379/0
+      - MAX_JOBS_PER_MINUTE=20
+    volumes:
+      - devinbox_data:/app/data
+    depends_on:
+      - redis
+    networks:
+      - devinbox-network
+
+  worker:
+    build: .
+    container_name: devinbox-worker
+    restart: unless-stopped
+    command: python backend/worker.py
+    environment:
+      - APP_NAME=DevInbox
+      - DEBUG=false
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - DATABASE_URL=sqlite:///./data/devinbox.db
+      - QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+      - QWEN_MODEL=qwen3.7-plus
+      - KEYS_DIR=./data/keys
+      - REDIS_URL=redis://redis:6379/0
+      - MAX_JOBS_PER_MINUTE=20
+    volumes:
+      - devinbox_data:/app/data
+    depends_on:
+      - redis
+    networks:
+      - devinbox-network
+    # To increase concurrency, scale this service instead of raising a
+    # single worker's internal concurrency, e.g.: docker compose up -d --scale worker=3
+
+  redis:
+    image: redis:7-alpine
+    container_name: devinbox-redis
+    restart: unless-stopped
+    volumes:
+      - devinbox_redis_data:/data
+    networks:
+      - devinbox-network
+
+volumes:
+  devinbox_data:
+  devinbox_redis_data:
+
+networks:
+  devinbox-network:
+    driver: bridge

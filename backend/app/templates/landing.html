@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name }} — AI-Powered Issue-to-PR Autopilot</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/tailwind.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <style>
+        .hero-glow {
+            background: radial-gradient(60% 50% at 50% 0%, rgba(99, 102, 241, 0.25) 0%, rgba(2, 6, 23, 0) 70%);
+        }
+    </style>
+</head>
+<body class="bg-surface-950 text-gray-100 font-sans">
+    <div class="hero-glow">
+        <nav class="max-w-6xl mx-auto flex items-center justify-between px-6 py-6">
+            <div class="flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-lg overflow-hidden shadow-lg shadow-primary-900/40">
+                    <img src="/static/favicon.svg" alt="DevInbox" class="w-full h-full">
+                </div>
+                <span class="font-bold text-white">{{ app_name }}</span>
+            </div>
+            <a href="/dashboard/login" class="px-4 py-2 bg-surface-900 border border-gray-800 hover:border-primary-500/50 text-sm font-medium rounded-lg transition-colors">Open Dashboard</a>
+        </nav>
+
+        <header class="max-w-4xl mx-auto text-center px-6 pt-16 pb-20 animate-fade-in">
+            <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-600/10 border border-primary-500/30 text-primary-400 text-xs font-medium mb-6">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> Global AI Hackathon — Track 4: Autopilot Agent
+            </span>
+            <h1 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight leading-tight">
+                From GitHub issue to reviewed pull request —<br class="hidden md:block"> autonomously.
+            </h1>
+            <p class="text-gray-400 mt-6 text-lg max-w-2xl mx-auto">
+                {{ app_name }} watches your repositories, classifies incoming issues with Qwen Cloud's reasoning models, inspects your real codebase through tool-use, generates a fix, and opens a draft PR — with a human approving the final merge.
+            </p>
+            <div class="mt-8 flex items-center justify-center gap-3">
+                <a href="/dashboard/login" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-lg transition-colors flex items-center gap-2">
+                    <i data-lucide="rocket" class="w-4 h-4"></i> Launch Dashboard
+                </a>
+                <a href="#architecture" class="px-6 py-3 bg-surface-900 border border-gray-800 hover:border-gray-700 text-gray-200 font-medium rounded-lg transition-colors">View Architecture</a>
+            </div>
+        </header>
+    </div>
+
+    <main class="max-w-6xl mx-auto px-6 pb-24">
+        <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-24">
+            <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-6" style="animation-delay:0ms">
+                <div class="w-10 h-10 bg-primary-600/15 rounded-lg flex items-center justify-center mb-4">
+                    <i data-lucide="brain-circuit" class="w-5 h-5 text-primary-400"></i>
+                </div>
+                <h3 class="text-white font-semibold mb-1.5">Real Qwen Tool-Use</h3>
+                <p class="text-sm text-gray-400">The agent calls <code>search_repo</code> and <code>read_file</code> mid-reasoning to inspect actual code before proposing a fix, instead of guessing from the issue text alone.</p>
+            </div>
+            <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-6" style="animation-delay:80ms">
+                <div class="w-10 h-10 bg-primary-600/15 rounded-lg flex items-center justify-center mb-4">
+                    <i data-lucide="git-pull-request" class="w-5 h-5 text-primary-400"></i>
+                </div>
+                <h3 class="text-white font-semibold mb-1.5">Human-in-the-Loop</h3>
+                <p class="text-sm text-gray-400">Issues are classified, diffs are generated, and draft PRs are opened automatically — but nothing merges without an explicit <code>/approve</code>.</p>
+            </div>
+            <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-6" style="animation-delay:160ms">
+                <div class="w-10 h-10 bg-primary-600/15 rounded-lg flex items-center justify-center mb-4">
+                    <i data-lucide="database" class="w-5 h-5 text-primary-400"></i>
+                </div>
+                <h3 class="text-white font-semibold mb-1.5">Durable Audit Trail</h3>
+                <p class="text-sm text-gray-400">Every classification, diff, and PR decision is logged and optionally archived to Alibaba Cloud OSS, with a webhook idempotency guard against duplicate deliveries.</p>
+            </div>
+            <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-6" style="animation-delay:240ms">
+                <div class="w-10 h-10 bg-primary-600/15 rounded-lg flex items-center justify-center mb-4">
+                    <i data-lucide="git-fork" class="w-5 h-5 text-primary-400"></i>
+                </div>
+                <h3 class="text-white font-semibold mb-1.5">Works on Repos You Don't Own</h3>
+                <p class="text-sm text-gray-400">If DevInbox lacks direct write access, it automatically forks the repository and opens a cross-repo pull request back to upstream — the same workflow a human open-source contributor would use.</p>
+            </div>
+        </section>
+
+        <section id="architecture" class="scroll-mt-8">
+            <div class="text-center mb-8">
+                <h2 class="text-2xl font-bold text-white flex items-center justify-center gap-2"><i data-lucide="workflow" class="w-6 h-6 text-primary-400"></i> How It Works</h2>
+                <p class="text-gray-400 mt-2">Issue in, reviewed pull request out.</p>
+            </div>
+            <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl p-4 md:p-8">
+                <img src="/static/architecture-diagram.png" alt="DevInbox architecture diagram" class="w-full h-auto rounded-lg">
+            </div>
+        </section>
+
+        <section class="mt-24 text-center">
+            <div class="card-hover animate-fade-in bg-gradient-to-br from-primary-600/15 to-surface-900 border border-primary-500/20 rounded-2xl p-10">
+                <h2 class="text-2xl font-bold text-white">Ready to put your issue backlog on autopilot?</h2>
+                <p class="text-gray-400 mt-2 max-w-lg mx-auto">Set your Qwen Cloud and GitHub keys once — everything else runs from the dashboard, no code editing required.</p>
+                <a href="/dashboard/login" class="inline-flex items-center gap-2 mt-6 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-lg transition-colors">
+                    <i data-lucide="arrow-right" class="w-4 h-4"></i> Get Started
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <footer class="border-t border-gray-800 py-6">
+        <p class="text-center text-gray-600 text-xs">Built with Qwen Cloud • Global AI Hackathon{% if app_version %} • v{{ app_version }}{% endif %}</p>
+    </footer>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script>lucide.createIcons();</script>
+</body>
+</html>

@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %}Discover Issues{% endblock %}
+{% block content %}
+<div class="mb-8">
+    <h2 class="text-2xl font-bold text-white flex items-center gap-2"><i data-lucide="compass" class="w-6 h-6 text-primary-400"></i> Discover Issues</h2>
+    <p class="text-gray-400 mt-1">Browse open, unclaimed issues across public GitHub repos worth working on. Pick one, then run the full pipeline on it directly from here.</p>
+</div>
+
+{% if not github_configured %}
+<div class="bg-yellow-900/30 border border-yellow-700 text-yellow-300 rounded-lg p-4 mb-6 text-sm">
+    GitHub token not configured yet — <a href="/dashboard/keys" class="underline">set it up here</a> before searching.
+</div>
+{% endif %}
+
+<div class="flex gap-2 mb-6 border-b border-gray-800">
+    <button onclick="switchTab('repo')" id="tab-repo" class="px-4 py-2.5 text-sm font-medium border-b-2 border-primary-500 text-white">Browse a Repo</button>
+    <button onclick="switchTab('global')" id="tab-global" class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">Search All of GitHub</button>
+</div>
+
+<div id="panel-repo">
+    <div class="card-hover bg-surface-900 border border-gray-800 rounded-xl p-6 mb-6">
+        <label class="block text-sm font-medium text-gray-300 mb-2">Search for a repo by name</label>
+        <div class="flex gap-3">
+            <input id="repo-search-input" class="flex-1 px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white" placeholder="e.g. fastapi, react, or owner/repo">
+            <button onclick="searchRepos()" id="repo-search-btn" class="px-5 py-3 bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-lg flex items-center gap-2 whitespace-nowrap">
+                <i data-lucide="search" class="w-4 h-4"></i> Find Repos
+            </button>
+        </div>
+    </div>
+
+    <div id="repo-search-results" class="space-y-2 mb-8"></div>
+
+    <div id="selected-repo-section" class="hidden">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2">
+                <i data-lucide="folder-git-2" class="w-5 h-5 text-primary-400"></i>
+                Issues in <span id="selected-repo-name" class="text-primary-400 font-mono"></span>
+            </h3>
+            <div class="flex items-center gap-2">
+                <input id="repo-issue-labels" class="px-3 py-2 bg-surface-800 border border-gray-700 rounded-lg text-white text-sm" placeholder="filter by label (optional)">
+                <button onclick="loadRepoIssues()" class="px-3 py-2 bg-surface-800 border border-gray-700 hover:border-primary-500/50 text-sm rounded-lg flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh</button>
+            </div>
+        </div>
+        <div id="repo-issues-empty" class="text-gray-400 text-sm">Loading issues...</div>
+        <div id="repo-issues-results" class="hidden space-y-3"></div>
+    </div>
+</div>
+
+<div id="panel-global" class="hidden">
+    <div class="card-hover bg-surface-900 border border-gray-800 rounded-xl p-6 mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+            <div class="md:col-span-2">
+                <label class="block text-sm font-medium text-gray-300 mb-2">Labels (comma-separated)</label>
+                <input id="discover-labels" class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white" value="good first issue">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Language (optional)</label>
+                <input id="discover-language" class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white" placeholder="e.g. python">
+            </div>
+            <div>
+                <button onclick="runDiscover()" id="discover-btn" class="w-full px-4 py-3 bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-lg flex items-center justify-center gap-2">
+                    <i data-lucide="search" class="w-4 h-4"></i> Search
+                </button>
+            </div>
+        </div>
+        <p class="text-xs text-gray-500 mt-3">Try labels like <code>good first issue</code>, <code>help wanted</code>, or <code>bug</code>. Fewer comments on an issue usually means nobody's actively working on it yet.</p>
+    </div>
+
+    <div id="discover-empty" class="text-gray-400 text-sm">Search above to see results.</div>
+    <div id="discover-results" class="hidden space-y-3"></div>
+</div>
+
+<script>
+function switchTab(tab) {
+    const isRepo = tab === 'repo';
+    document.getElementById('panel-repo').classList.toggle('hidden', !isRepo);
+    document.getElementById('panel-global').classList.toggle('hidden', isRepo);
+    document.getElementById('tab-repo').classList.toggle('border-primary-500', isRepo);
+    document.getElementById('tab-repo').classList.toggle('text-white', isRepo);
+    document.getElementById('tab-repo').classList.toggle('border-transparent', !isRepo);
+    document.getElementById('tab-repo').classList.toggle('text-gray-400', !isRepo);
+    document.getElementById('tab-global').classList.toggle('border-primary-500', !isRepo);
+    document.getElementById('tab-global').classList.toggle('text-white', !isRepo);
+    document.getElementById('tab-global').classList.toggle('border-transparent', isRepo);
+    document.getElementById('tab-global').classList.toggle('text-gray-400', isRepo);
+}
+
+let currentRepo = null;
+
+async function searchRepos() {
+    const btn = document.getElementById('repo-search-btn');
+    const q = document.getElementById('repo-search-input').value.trim();
+    const container = document.getElementById('repo-search-results');
+    if (!q) return showToast('Type something to search for', 'warning');
+
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Searching...';
+    lucide.createIcons();
+
+    try {
+        const resp = await fetch(`/api/agent/search-repos?q=${encodeURIComponent(q)}`);
+        const data = await resp.json();
+        if (!data.success) {
+            showToast(data.message || data.error || 'Search failed', 'error');
+            return;
+        }
+        if (data.repos.length === 0) {
+            container.innerHTML = '<p class="text-gray-400 text-sm">No repos found — try a different search term.</p>';
+            return;
+        }
+        container.innerHTML = data.repos.map(r => `
+            <div onclick="selectRepo('${r.full_name}')" class="cursor-pointer card-hover bg-surface-900 border border-gray-800 hover:border-primary-500/50 rounded-lg p-4 flex items-center justify-between gap-4">
+                <div class="min-w-0">
+                    <div class="text-white font-medium font-mono">${r.full_name}</div>
+                    <div class="text-sm text-gray-400 truncate">${r.description || ''}</div>
+                </div>
+                <div class="flex items-center gap-3 text-xs text-gray-500 shrink-0">
+                    <span class="flex items-center gap-1"><i data-lucide="star" class="w-3.5 h-3.5"></i> ${r.stars}</span>
+                    <span class="flex items-center gap-1"><i data-lucide="circle-dot" class="w-3.5 h-3.5"></i> ${r.open_issues}</span>
+                    ${r.language ? `<span class="px-2 py-0.5 bg-surface-800 border border-gray-700 rounded-full">${r.language}</span>` : ''}
+                </div>
+            </div>
+        `).join('');
+        lucide.createIcons();
+    } catch (e) {
+        showToast(e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="search" class="w-4 h-4"></i> Find Repos';
+        lucide.createIcons();
+    }
+}
+
+function selectRepo(repoFullName) {
+    currentRepo = repoFullName;
+    document.getElementById('selected-repo-name').textContent = repoFullName;
+    document.getElementById('selected-repo-section').classList.remove('hidden');
+    loadRepoIssues();
+    document.getElementById('selected-repo-section').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function loadRepoIssues() {
+    if (!currentRepo) return;
+    const empty = document.getElementById('repo-issues-empty');
+    const results = document.getElementById('repo-issues-results');
+    const labels = document.getElementById('repo-issue-labels').value.trim();
+
+    empty.classList.remove('hidden');
+    empty.textContent = 'Loading issues...';
+    results.classList.add('hidden');
+
+    try {
+        const params = new URLSearchParams({ repo: currentRepo });
+        if (labels) params.set('labels', labels);
+        const resp = await fetch(`/api/agent/repo-issues?${params.toString()}`);
+        const data = await resp.json();
+
+        if (!data.success) {
+            empty.textContent = data.message || data.error || 'Failed to load issues';
+            return;
+        }
+        if (data.issues.length === 0) {
+            empty.textContent = 'No open issues found for this repo/filter.';
+            return;
+        }
+
+        empty.classList.add('hidden');
+        results.classList.remove('hidden');
+        results.innerHTML = data.issues.map(issue => renderIssueCard(issue)).join('');
+        lucide.createIcons();
+    } catch (e) {
+        empty.textContent = 'Error: ' + e.message;
+    }
+}
+
+function renderIssueCard(issue) {
+    return `
+        <div class="card-hover bg-surface-900 border border-gray-800 rounded-xl p-5 flex items-start justify-between gap-4">
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="text-xs font-mono text-primary-400">${issue.repo_full_name}</span>
+                    <span class="text-xs text-gray-600">#${issue.issue_number}</span>
+                </div>
+                <a href="${issue.url}" target="_blank" class="text-white font-medium hover:text-primary-400 transition-colors">${issue.title}</a>
+                <div class="flex items-center gap-3 mt-2 text-xs text-gray-500 flex-wrap">
+                    <span class="flex items-center gap-1"><i data-lucide="message-circle" class="w-3 h-3"></i> ${issue.comments} comments</span>
+                    <span>updated ${issue.updated_at ? issue.updated_at.split('T')[0] : ''}</span>
+                    ${issue.labels.map(l => `<span class="px-2 py-0.5 bg-surface-800 border border-gray-700 rounded-full">${l}</span>`).join('')}
+                </div>
+            </div>
+            <button onclick="runOnIssue('${issue.repo_full_name}', ${issue.issue_number}, this)"
+                    class="shrink-0 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium rounded-lg flex items-center gap-2">
+                <i data-lucide="rocket" class="w-4 h-4"></i> Run Agent
+            </button>
+        </div>
+    `;
+}
+
+async function runDiscover() {
+    const btn = document.getElementById('discover-btn');
+    const labels = document.getElementById('discover-labels').value.trim();
+    const language = document.getElementById('discover-language').value.trim();
+    const empty = document.getElementById('discover-empty');
+    const results = document.getElementById('discover-results');
+
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Searching...';
+    lucide.createIcons();
+
+    try {
+        const params = new URLSearchParams({ labels: labels || 'good first issue' });
+        if (language) params.set('language', language);
+        const resp = await fetch(`/api/agent/discover?${params.toString()}`);
+        const data = await resp.json();
+
+        if (!data.success) {
+            showToast(data.message || data.error || 'Search failed', 'error');
+            return;
+        }
+
+        empty.classList.add('hidden');
+        results.classList.remove('hidden');
+
+        if (data.issues.length === 0) {
+            results.innerHTML = '<p class="text-gray-400 text-sm">No results — try different labels or drop the language filter.</p>';
+            return;
+        }
+
+        results.innerHTML = data.issues.map(issue => renderIssueCard(issue)).join('');
+        lucide.createIcons();
+    } catch (e) {
+        showToast(e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="search" class="w-4 h-4"></i> Search';
+        lucide.createIcons();
+    }
+}
+
+async function runOnIssue(repo, issueNumber, btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Running...';
+    lucide.createIcons();
+    try {
+        const result = await apiRequest('/api/agent/run', {
+            method: 'POST',
+            body: JSON.stringify({ repo, issue_number: issueNumber })
+        });
+        if (result.pr_url) {
+            showToast('Done — pull request opened', 'success');
+            btn.innerHTML = '<i data-lucide="external-link" class="w-4 h-4"></i> View PR';
+            btn.onclick = () => window.open(result.pr_url, '_blank');
+            btn.disabled = false;
+        } else {
+            showToast(`Finished with status: ${result.status}`, 'warning');
+            btn.innerHTML = '<i data-lucide="check" class="w-4 h-4"></i> Done';
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="rocket" class="w-4 h-4"></i> Run Agent';
+        lucide.createIcons();
+    }
+}
+</script>
+{% endblock %}

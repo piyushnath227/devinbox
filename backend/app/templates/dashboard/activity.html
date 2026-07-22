@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Activity Log{% endblock %}
+{% block content %}
+<div class="mb-8">
+    <h2 class="text-2xl font-bold text-white flex items-center gap-2"><i data-lucide="list-checks" class="w-6 h-6 text-primary-400"></i> Activity Log</h2>
+    <p class="text-gray-400 mt-1">Full audit trail of every agent action and decision.</p>
+</div>
+
+<div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden">
+    {% if activity_logs %}
+    <div class="divide-y divide-gray-800">
+        {% for log in activity_logs %}
+        <div class="p-4 hover:bg-surface-800/50">
+            <div class="flex items-start gap-4">
+                <span class="inline-block w-2.5 h-2.5 rounded-full mt-1.5 {% if log.level=='error' %}bg-red-500{% elif log.level=='warning' %}bg-yellow-500{% else %}bg-blue-500{% endif %}"></span>
+                <div class="flex-1 min-w-0">
+                    <span class="px-2 py-0.5 rounded text-xs font-medium bg-surface-800 text-gray-400">{{ log.action_type | replace('_',' ') | title }}</span>
+                    <span class="text-xs text-gray-500 ml-2">{{ log.timestamp }}</span>
+                    <p class="text-sm text-white mt-1.5">{{ log.description }}</p>
+                    <div class="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                        {% if log.tokens_used %}<span class="flex items-center gap-1"><i data-lucide="hash" class="w-3 h-3"></i> {{ log.tokens_used }} tokens</span>{% endif %}
+                        {% if log.latency_ms %}<span class="flex items-center gap-1"><i data-lucide="timer" class="w-3 h-3"></i> {{ log.latency_ms }}ms</span>{% endif %}
+                    </div>
+                </div>
+                <i data-lucide="{{ 'check-circle' if log.is_success else 'x-circle' }}" class="w-4 h-4 {{ 'text-green-400' if log.is_success else 'text-red-400' }}"></i>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-center py-16">
+        <i data-lucide="clipboard-list" class="w-10 h-10 text-gray-600 mx-auto mb-4"></i>
+        <h3 class="text-lg font-semibold text-white mb-2">No Activity Yet</h3>
+        <p class="text-gray-400 text-sm">Activity will appear here once the agent starts processing issues.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - {{ app_name }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/tailwind.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body class="bg-surface-950 text-gray-100 min-h-screen flex items-center justify-center font-sans">
+    <div class="w-full max-w-md animate-fade-in">
+        <div class="card-hover bg-surface-900 border border-gray-800 rounded-2xl shadow-2xl p-8">
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-4 shadow-lg shadow-primary-900/40">
+                    <img src="/static/favicon.svg" alt="DevInbox" class="w-full h-full">
+                </div>
+                <h1 class="text-2xl font-bold text-white">{{ app_name }}</h1>
+                <p class="text-gray-400 mt-2 text-sm">
+                    {% if is_first_run %}Welcome! Create your admin password to get started.{% else %}Enter your password to continue.{% endif %}
+                </p>
+            </div>
+            <form id="login-form" class="space-y-5">
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">
+                        {% if is_first_run %}Create Admin Password{% else %}Admin Password{% endif %}
+                    </label>
+                    <input type="password" id="password" required minlength="6" placeholder="Enter your password..."
+                           class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500" autofocus>
+                </div>
+                <button type="submit" id="login-button"
+                        class="w-full px-4 py-3 bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-lg transition-colors">
+                    {% if is_first_run %}Create & Enter{% else %}Sign In{% endif %}
+                </button>
+            </form>
+            <div id="login-error" class="mt-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-400 text-sm hidden"></div>
+        </div>
+        <p class="text-center text-gray-600 text-xs mt-6">Built with Qwen Cloud • Global AI Hackathon</p>
+    </div>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script>
+        lucide.createIcons();
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const password = document.getElementById('password').value;
+            const errorDiv = document.getElementById('login-error');
+            errorDiv.classList.add('hidden');
+            try {
+                const formData = new URLSearchParams();
+                formData.append('password', password);
+                const response = await fetch('/dashboard/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+                const data = await response.json();
+                if (data.success) {
+                    window.location.href = '/dashboard/';
+                } else {
+                    errorDiv.textContent = data.message || 'Login failed';
+                    errorDiv.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorDiv.textContent = 'Network error. Please try again.';
+                errorDiv.classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
