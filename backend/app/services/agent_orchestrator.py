@@ -253,12 +253,19 @@ class AgentOrchestrator:
         return self._result(issue, "low_confidence", start_time)
 
     def check_and_merge_approved_prs(self, repo_full_name: str) -> Dict[str, Any]:
+        # Include MERGE_CONFLICT so that once a maintainer manually fixes a
+        # conflicting PR and comments /approve again, we retry the merge
+        # instead of ignoring the PR forever.
         open_issues = (
             self.db.query(IssueRecord)
-            .filter(IssueRecord.repository == repo_full_name, IssueRecord.status == IssueStatus.PR_CREATED)
+            .filter(
+                IssueRecord.repository == repo_full_name,
+                IssueRecord.status.in_([IssueStatus.PR_CREATED, IssueStatus.MERGE_CONFLICT]),
+            )
             .all()
         )
         merged = []
+        conflicts = []
         for issue in open_issues:
             approval = self.github.check_for_approval(repo_full_name, issue.pr_number)
             if approval.get("approved"):
@@ -273,8 +280,45 @@ class AgentOrchestrator:
                         f"✅ Merged! Approved by @{approval['approved_by']}. Thanks for using DevInbox! 🎉",
                     )
                     merged.append(issue.issue_number)
+                else:
+                    if self._handle_merge_failure(issue, repo_full_name, merge_result):
+                        conflicts.append(issue.issue_number)
         self.db.commit()
-        return {"checked": len(open_issues), "merged": len(merged)}
+        return {"checked": len(open_issues), "merged": len(merged), "conflicts": len(conflicts)}
+
+    def _handle_merge_failure(self, issue: IssueRecord, repo_full_name: str, merge_result: dict) -> bool:
+        """Handle a failed merge. Returns True if it was a conflict.
+
+        DevInbox doesn't auto-resolve merge conflicts (that's genuinely
+        hard to do safely). Instead of failing silently, it makes the
+        conflict visible: the issue moves to MERGE_CONFLICT status (shown
+        on the dashboard) and a comment explains what a maintainer needs
+        to do. Once the branch is fixed and /approve is commented again,
+        check_and_merge_approved_prs retries it (see the status filter
+        above).
+        """
+        error = merge_result.get("error", "unknown error")
+        is_conflict = "conflict" in error.lower()
+        if is_conflict:
+            issue.status = IssueStatus.MERGE_CONFLICT
+            self._log(
+                issue, "merge_conflict",
+                f"PR #{issue.pr_number} has merge conflicts and needs manual resolution",
+                level="warning", is_success=False,
+            )
+            self.github.post_comment(
+                repo_full_name, issue.issue_number,
+                f"⚠️ **Merge conflict**\n\n"
+                f"PR #{issue.pr_number} can't be auto-merged — it now conflicts with changes "
+                f"already on the base branch.\n\n"
+                f"**To resolve:** a maintainer needs to pull the latest base branch, merge or rebase it "
+                f"into `{issue.branch_name}`, fix the conflicting lines, push, then comment `/approve` again "
+                f"and DevInbox will retry the merge.\n\n"
+                f"---\n*Automated response by DevInbox AI Agent*",
+            )
+        else:
+            self._log(issue, "merge_failed", f"PR #{issue.pr_number} merge failed: {error}", level="error", is_success=False)
+        return is_conflict
 
     # Helpers
 
@@ -335,9 +379,9 @@ class AgentOrchestrator:
             # FIX #8: Catch specific exceptions instead of generic Exception
             try:
                 if tool_name == "search_repo":
-                    result = self.github.search_code(repo_full_name, args.get("query", ""))
+                    result = self.github.search_code(repo_full_name, args.get("query", ""), ref=args.get("ref"))
                 elif tool_name == "read_file":
-                    result = self.github.read_file(repo_full_name, args.get("path", ""))
+                    result = self.github.read_file(repo_full_name, args.get("path", ""), ref=args.get("ref"))
                 else:
                     result = {"success": False, "error": f"Unknown tool '{tool_name}'"}
             except ValueError as e:

@@ -79,6 +79,10 @@ Before proposing a fix, use the available tools to actually inspect the reposito
 - Call `search_repo` to locate files that mention relevant symbols/keywords from the issue.
 - Call `read_file` to read the real contents of any file you plan to modify, so your diff
   applies against real code instead of guesswork.
+Both tools default to the repository's default branch. If the issue text references a specific
+branch (e.g. "on the dev branch" or "in feature/x"), pass that branch name as `ref` -- note that
+on non-default branches, search only matches file *names*, not file contents, since GitHub's
+content search only covers the default branch; use read_file more liberally in that case.
 Use as few tool calls as necessary (typically 1-4) to ground your fix in the real codebase,
 then respond with the final JSON object described above and nothing else."""
 
@@ -88,10 +92,18 @@ then respond with the final JSON object described above and nothing else."""
             "type": "function",
             "function": {
                 "name": "search_repo",
-                "description": "Search the repository's code for a keyword or symbol to locate files relevant to the issue.",
+                "description": (
+                    "Search the repository's code for a keyword or symbol to locate files relevant to the "
+                    "issue. Defaults to the default branch (full content search). If `ref` is set to a "
+                    "non-default branch, this instead matches file names only, since GitHub cannot "
+                    "full-text search non-default branches."
+                ),
                 "parameters": {
                     "type": "object",
-                    "properties": {"query": {"type": "string", "description": "Keyword, function name, or symbol to search for"}},
+                    "properties": {
+                        "query": {"type": "string", "description": "Keyword, function name, or symbol to search for"},
+                        "ref": {"type": "string", "description": "Optional branch name to search. Defaults to the repository's default branch."},
+                    },
                     "required": ["query"],
                 },
             },
@@ -103,7 +115,10 @@ then respond with the final JSON object described above and nothing else."""
                 "description": "Read the full text contents of a specific file in the repository before proposing changes to it.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string", "description": "File path relative to the repository root"}},
+                    "properties": {
+                        "path": {"type": "string", "description": "File path relative to the repository root"},
+                        "ref": {"type": "string", "description": "Optional branch name to read from. Defaults to the repository's default branch."},
+                    },
                     "required": ["path"],
                 },
             },

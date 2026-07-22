@@ -53,10 +53,23 @@ class GitHubService:
             logger.error("read_file_unexpected_error", path=path, error=str(e))
             return {"success": False, "error": str(e)}
 
-    def search_code(self, repo_full_name: str, query: str, max_results: int = 10) -> Dict[str, Any]:
-        """Search the repo's code via GitHub's search API. Used as a tool call
-        to locate relevant files before deciding what to modify."""
+    def search_code(self, repo_full_name: str, query: str, max_results: int = 10, ref: Optional[str] = None) -> Dict[str, Any]:
+        """Search the repo's code to locate files relevant to the issue.
+
+        GitHub's code search API (used below when `ref` is empty/default)
+        only indexes the repository's default branch. If the agent needs to
+        search a *different* branch, that API can't be used, so we fall
+        back to listing the full file tree at that ref via the Git Trees
+        API -- which works for any branch/ref -- and match filenames
+        against the query. This is a weaker search (filenames only, not
+        file contents) but it's the only option GitHub's REST API offers
+        for non-default branches.
+        """
         try:
+            repo = self.get_repository(repo_full_name)
+            if ref and ref != repo.default_branch:
+                return self._search_by_filename_in_branch(repo, query, ref, max_results)
+
             full_query = f"{query} repo:{repo_full_name}"
             results = self.client.search_code(full_query)
             matches = []
@@ -64,13 +77,39 @@ class GitHubService:
                 if i >= max_results:
                     break
                 matches.append({"path": item.path, "name": item.name})
-            return {"success": True, "query": query, "matches": matches}
+            return {"success": True, "query": query, "matches": matches, "searched_ref": repo.default_branch}
         except GithubException as e:
             logger.warning("search_code_failed", query=query, error=str(e), status=getattr(e, 'status', None))
             return {"success": False, "error": str(e)}
         except Exception as e:
             logger.error("search_code_unexpected_error", query=query, error=str(e))
             return {"success": False, "error": str(e)}
+
+    def _search_by_filename_in_branch(self, repo, query: str, ref: str, max_results: int) -> Dict[str, Any]:
+        """Fallback search for non-default branches: list the branch's full
+        tree and match the query against file paths (case-insensitive
+        substring). Note this does NOT search file contents -- GitHub gives
+        no REST endpoint for full-text search on arbitrary refs."""
+        try:
+            branch_ref = repo.get_git_ref(f"heads/{ref}")
+            tree = repo.get_git_tree(branch_ref.object.sha, recursive=True)
+            query_lower = query.lower()
+            matches = []
+            for item in tree.tree:
+                if item.type != "blob":
+                    continue
+                if query_lower in item.path.lower():
+                    matches.append({"path": item.path, "name": item.path.split("/")[-1]})
+                if len(matches) >= max_results:
+                    break
+            return {
+                "success": True, "query": query, "matches": matches, "searched_ref": ref,
+                "note": "Non-default-branch search matches filenames only, not file contents "
+                        "(GitHub's content search API only covers the default branch).",
+            }
+        except GithubException as e:
+            logger.warning("branch_search_failed", ref=ref, error=str(e))
+            return {"success": False, "error": f"Could not search branch '{ref}': {e.data.get('message', str(e)) if e.data else str(e)}"}
 
     def get_repository_structure(self, repo_full_name: str, max_files: int = 400) -> Dict[str, Any]:
         """Fetch a recursive file listing via the Git Trees API -- one

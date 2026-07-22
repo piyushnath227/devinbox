@@ -33,6 +33,16 @@ services:
     container_name: devinbox-worker
     restart: unless-stopped
     command: python backend/worker.py
+    healthcheck:
+      # No web server to ping here (unlike `app`) -- instead, ask Redis
+      # whether this process is currently registered as an active RQ
+      # worker. This actually confirms it's alive and connected, not just
+      # that some process happens to be running.
+      test: ["CMD-SHELL", "python -c \"import os,sys,redis; from rq import Worker; conn=redis.from_url(os.environ['REDIS_URL']); sys.exit(0 if Worker.all(connection=conn) else 1)\""]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
     environment:
       - APP_NAME=DevInbox
       - DEBUG=false
