@@ -73,12 +73,22 @@ class Settings(BaseSettings):
     def __init__(self, **data):
         """Validate SECRET_KEY on initialization (FIX #3)."""
         super().__init__(**data)
-        # FIX #3: Warn if using default SECRET_KEY in production
-        if self.SECRET_KEY == "change-this-to-a-random-secret-key-in-production":
+        # FIX #3: Warn if using default SECRET_KEY in production.
+        # Checks against every placeholder actually shipped in this repo
+        # (.env.example, docker-compose.yml's fallback, etc.) -- a single
+        # exact-string check silently misses the rest if they ever drift
+        # out of sync with each other.
+        _KNOWN_INSECURE_DEFAULTS = {
+            "change-this-to-a-random-secret-key-in-production",
+            "change-this-to-a-random-secret-key",
+            "change-this-in-production",
+        }
+        if self.SECRET_KEY in _KNOWN_INSECURE_DEFAULTS or self.SECRET_KEY.startswith("change-this"):
             if not self.DEBUG:
                 raise ValueError(
-                    "CRITICAL: SECRET_KEY is using the default value in production mode! "
-                    "Set SECRET_KEY environment variable to a secure random value immediately."
+                    "CRITICAL: SECRET_KEY is using a default/placeholder value in production mode! "
+                    "Set SECRET_KEY environment variable to a secure random value immediately "
+                    "(e.g. `openssl rand -hex 32`)."
                 )
             else:
                 logger.warning(

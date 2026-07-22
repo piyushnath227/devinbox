@@ -19,6 +19,7 @@ class IssueStatus(str, enum.Enum):
     GENERATING = "generating"
     LOW_CONFIDENCE = "low_confidence"
     PR_CREATED = "pr_created"
+    MERGE_CONFLICT = "merge_conflict"
     APPROVED = "approved"
     MERGED = "merged"
     CLOSED = "closed"
