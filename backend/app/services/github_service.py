@@ -259,7 +259,7 @@ class GitHubService:
         repo = self.get_repository(repo_full_name)
         prepared, seen = [], set()
         tree = repo.get_git_tree(repo.get_git_commit(base_sha).tree.sha, recursive=True)
-        if tree.truncated:
+        if tree.raw_data.get("truncated") is not False:
             raise PatchError("Repository tree is truncated; cannot validate file modes")
         modes = {item.path: item.mode for item in tree.tree}
         for change in changes:
@@ -296,7 +296,8 @@ class GitHubService:
                     expected[file["path"]] = (file["mode"], blob_sha)
                 base_tree = repo.get_git_tree(repo.get_git_commit(base_sha).tree.sha, recursive=True)
                 actual_tree = repo.get_git_tree(commit.tree.sha, recursive=True)
-                if base_tree.truncated or actual_tree.truncated:
+                if (base_tree.raw_data.get("truncated") is not False
+                        or actual_tree.raw_data.get("truncated") is not False):
                     raise PatchError("Cannot verify recovered commit: truncated tree")
                 desired = {x.path: (x.mode, x.sha) for x in base_tree.tree if x.type != "tree"}
                 desired.update(expected)

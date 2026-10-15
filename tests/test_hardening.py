@@ -276,8 +276,26 @@ def test_recovered_commit_with_unexpected_content_is_rejected():
     commit = SimpleNamespace(message='expected', parents=[SimpleNamespace(sha='a' * 40)],
                              tree=SimpleNamespace(sha='tree'))
     repo.get_git_commit.return_value = commit
-    repo.get_git_tree.return_value = SimpleNamespace(truncated=False, tree=[])
+    repo.get_git_tree.return_value = SimpleNamespace(raw_data={"truncated": False}, tree=[])
     with pytest.raises(PatchError, match='does not match'):
         svc.commit_patch_set('o/r', 'branch', 'a' * 40,
                              [{'path': 'x.py', 'content': 'x=1\n', 'mode': '100644'}], 'expected')
     repo.get_git_ref.return_value.edit.assert_not_called()
+
+
+@pytest.mark.parametrize("metadata", [{"truncated": False}, {"truncated": True}, {}])
+def test_patch_preparation_reads_real_pygithub_tree_metadata(metadata):
+    from github.GitTree import GitTree
+
+    tree = GitTree(MagicMock(), {}, {"sha": "tree", "tree": [], **metadata}, completed=True)
+    svc = GitHubService.__new__(GitHubService)
+    repo = MagicMock()
+    repo.get_git_tree.return_value = tree
+    svc.get_repository = lambda _: repo
+    changes = [{"file": "new.py", "code_diff": "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+answer = 42\n"}]
+    if metadata.get("truncated") is False:
+        assert svc.prepare_patch_set("o/r", "a" * 40, changes) == [
+            {"path": "new.py", "content": "answer = 42\n", "mode": "100644"}]
+    else:
+        with pytest.raises(PatchError, match="truncated"):
+            svc.prepare_patch_set("o/r", "a" * 40, changes)
