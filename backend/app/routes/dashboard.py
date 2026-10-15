@@ -3,26 +3,26 @@ overview stats, activity log, and the test-agent page. API keys are
 entered here and encrypted at rest — no code editing required."""
 
 import json
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List
-from fastapi import APIRouter, Request, Depends, HTTPException, Form
+from typing import Optional
+from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 import structlog
 
-from ..config import get_settings, get_key_manager
+from ..config import Settings, get_settings, get_key_manager
 from ..models.database import get_db
 from ..models.api_keys import APIKeyConfig
 from ..models.issues import IssueRecord, IssueStatus
 from ..models.activity_log import ActivityLog
-from ..services.qwen_service import QwenService
+from ..services.llm_service import LLMConfigError, PROVIDER_PRESETS, build_llm_service, is_llm_configured
 from ..services.github_service import GitHubService
 from ..services.crypto_service import get_crypto_service
-from ..services.alibaba_oss_service import AlibabaOSSService
+from ..services.audit_archive import build_audit_archive
+from ..services.rate_limiter import FailureRateLimiter, redis_client_from_settings
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -34,12 +34,12 @@ def get_current_user(request: Request) -> dict:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     payload = get_crypto_service().verify_token(token)
-    if payload is None:
+    if payload is None or payload.get("user") != "admin" or payload.get("type") != "access_token":
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return payload
 
 
-def _get_client_ip(request: Request, settings: "Settings") -> str:
+def _get_client_ip(request: Request, settings: Settings) -> str:
     """FIX #2: Get client IP with proper proxy header handling.
     
     Checks X-Forwarded-For header first (for proxies), then falls back to direct connection.
@@ -66,7 +66,7 @@ def _get_client_ip(request: Request, settings: "Settings") -> str:
 async def login_page(request: Request):
     settings = get_settings()
     km = get_key_manager()
-    return templates.TemplateResponse("dashboard/login.html", {
+    return templates.TemplateResponse(request, "dashboard/login.html", {
         "request": request, "app_name": settings.APP_NAME,
         "is_first_run": km.get_admin_password_hash() is None,
     })
@@ -93,10 +93,10 @@ async def overview(request: Request, user: dict = Depends(get_current_user), db:
                 trend_counts[day_index] += 1
     trend_labels = [(window_start + timedelta(days=i)).strftime("%b %d") for i in range(14)]
 
-    return templates.TemplateResponse("dashboard/overview.html", {
+    return templates.TemplateResponse(request, "dashboard/overview.html", {
         "request": request, "app_name": settings.APP_NAME, "app_version": settings.APP_VERSION,
         "stats": {"total_issues": total, "pr_created": pr_created, "merged": merged, "failed": failed},
-        "qwen_configured": km.has_keys("qwen"), "github_configured": km.has_keys("github"),
+        "llm_configured": is_llm_configured(km, settings), "github_configured": km.has_keys("github"),
         "recent_activity": [log.to_dict() for log in recent], "current_page": "overview",
         "trend_labels": trend_labels, "trend_counts": trend_counts,
     })
@@ -106,12 +106,16 @@ async def overview(request: Request, user: dict = Depends(get_current_user), db:
 async def api_keys_page(request: Request, user: dict = Depends(get_current_user)):
     settings = get_settings()
     km = get_key_manager()
-    return templates.TemplateResponse("dashboard/api_keys.html", {
+    return templates.TemplateResponse(request, "dashboard/api_keys.html", {
         "request": request, "app_name": settings.APP_NAME,
-        "qwen_configured": km.has_keys("qwen"), "github_configured": km.has_keys("github"),
-        "alibaba_configured": km.has_keys("alibaba"),
-        "qwen_model": settings.QWEN_MODEL, "qwen_base_url": settings.QWEN_BASE_URL,
-        "alibaba_endpoint": settings.ALIBABA_OSS_ENDPOINT,
+        "llm_configured": is_llm_configured(km, settings), "github_configured": km.has_keys("github"),
+        "storage_configured": km.get_storage_credentials() is not None,
+        "llm_provider": (km.get_llm_credentials() or {}).get("provider") or settings.LLM_PROVIDER or "qwen",
+        "llm_model": (km.get_llm_credentials() or {}).get("model") or settings.LLM_MODEL,
+        "llm_base_url": (km.get_llm_credentials() or {}).get("base_url") or settings.LLM_BASE_URL,
+        "llm_fallbacks": (km.get_llm_credentials() or {}).get("fallback_models") or settings.LLM_FALLBACK_MODELS,
+        "llm_presets": {k: v["base_url"] for k, v in PROVIDER_PRESETS.items()},
+        "storage_endpoint": settings.S3_ENDPOINT_URL,
         "current_page": "keys",
     })
 
@@ -120,7 +124,7 @@ async def api_keys_page(request: Request, user: dict = Depends(get_current_user)
 async def activity_page(request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     settings = get_settings()
     logs = db.query(ActivityLog).order_by(desc(ActivityLog.timestamp)).limit(100).all()
-    return templates.TemplateResponse("dashboard/activity.html", {
+    return templates.TemplateResponse(request, "dashboard/activity.html", {
         "request": request, "app_name": settings.APP_NAME,
         "activity_logs": [log.to_dict() for log in logs], "current_page": "activity",
     })
@@ -129,7 +133,7 @@ async def activity_page(request: Request, user: dict = Depends(get_current_user)
 @router.get("/test", response_class=HTMLResponse)
 async def test_agent_page(request: Request, user: dict = Depends(get_current_user)):
     settings = get_settings()
-    return templates.TemplateResponse("dashboard/test_agent.html", {
+    return templates.TemplateResponse(request, "dashboard/test_agent.html", {
         "request": request, "app_name": settings.APP_NAME, "current_page": "test",
     })
 
@@ -138,30 +142,35 @@ async def test_agent_page(request: Request, user: dict = Depends(get_current_use
 async def discover_page(request: Request, user: dict = Depends(get_current_user)):
     settings = get_settings()
     km = get_key_manager()
-    return templates.TemplateResponse("dashboard/discover.html", {
+    return templates.TemplateResponse(request, "dashboard/discover.html", {
         "request": request, "app_name": settings.APP_NAME, "current_page": "discover",
         "github_configured": km.has_keys("github"),
     })
 
 
-# Simple in-memory rate limiter for login attempts, keyed by client IP.
-# This resets on restart and only applies within a single process — fine for
-# DevInbox's single-instance deployment, but wouldn't hold up across a
-# multi-worker/multi-replica setup without a shared store (e.g. Redis).
+# Login throttle: 5 failures / 15 min per client IP. Redis-backed when REDIS_URL
+# is set, so the limit holds across uvicorn workers and app replicas.
 _LOGIN_RATE_LIMIT = 5
 _LOGIN_RATE_WINDOW_SECONDS = 900
-_login_attempts: Dict[str, List[float]] = {}
+_login_limiter: Optional[FailureRateLimiter] = None
+
+
+def _get_login_limiter() -> FailureRateLimiter:
+    global _login_limiter
+    if _login_limiter is None:
+        _login_limiter = FailureRateLimiter(
+            "login", _LOGIN_RATE_LIMIT, _LOGIN_RATE_WINDOW_SECONDS,
+            redis_client=redis_client_from_settings(get_settings()),
+        )
+    return _login_limiter
 
 
 def _login_rate_limited(client_ip: str) -> bool:
-    now = time.time()
-    attempts = _login_attempts.setdefault(client_ip, [])
-    attempts[:] = [t for t in attempts if now - t < _LOGIN_RATE_WINDOW_SECONDS]
-    return len(attempts) >= _LOGIN_RATE_LIMIT
+    return _get_login_limiter().is_limited(client_ip)
 
 
 def _record_login_failure(client_ip: str) -> None:
-    _login_attempts.setdefault(client_ip, []).append(time.time())
+    _get_login_limiter().record_failure(client_ip)
 
 
 @router.post("/api/auth/login")
@@ -191,18 +200,23 @@ async def api_login(request: Request):
     stored_hash = km.get_admin_password_hash()
 
     if stored_hash is None:
+        if not settings.DEBUG:
+            return JSONResponse({"success": False, "message": "Administrator must be provisioned by the operator"}, status_code=503)
+        if len(password) < 12:
+            return JSONResponse({"success": False, "message": "Use at least 12 characters"}, status_code=400)
         stored_hash = crypto.hash_password(password)
-        km.save_admin_password_hash(stored_hash)
+        if not km.save_admin_password_hash(stored_hash):
+            return JSONResponse({"success": False, "message": "Could not save administrator"}, status_code=503)
         token = crypto.create_access_token({"user": "admin"})
         resp = JSONResponse({"success": True, "is_first_run": True})
-        resp.set_cookie("devinbox_token", token, httponly=True, samesite="lax", max_age=86400)
+        resp.set_cookie("devinbox_token", token, httponly=True, secure=not settings.DEBUG, samesite="strict", max_age=86400)
         logger.info("login_first_run", client_ip=client_ip)
         return resp
 
     if crypto.verify_password(password, stored_hash):
         token = crypto.create_access_token({"user": "admin"})
         resp = JSONResponse({"success": True})
-        resp.set_cookie("devinbox_token", token, httponly=True, samesite="lax", max_age=86400)
+        resp.set_cookie("devinbox_token", token, httponly=True, secure=not settings.DEBUG, samesite="strict", max_age=86400)
         logger.info("login_success", client_ip=client_ip)
         return resp
 
@@ -229,7 +243,8 @@ async def save_api_keys(request: Request, user: dict = Depends(get_current_user)
         keys = data.get("keys", {})
 
         # FIX #5: Validate service parameter
-        if service not in ("qwen", "github", "alibaba"):
+        service = {"alibaba": "storage", "qwen": "llm"}.get(service, service)  # legacy client names
+        if service not in ("llm", "github", "storage"):
             logger.warning("api_keys_invalid_service", service=service)
             return JSONResponse(
                 {"success": False, "message": "Invalid service"},
@@ -283,16 +298,16 @@ async def test_api_keys(service: str, user: dict = Depends(get_current_user), db
     km = get_key_manager()
     settings = get_settings()
 
-    if service == "qwen":
-        api_key = km.get_qwen_api_key()
-        if not api_key:
-            return JSONResponse({"success": False, "message": "Not configured"}, status_code=400)
+    if service in ("llm", "qwen"):
         try:
-            qwen = QwenService(api_key, km.get_qwen_base_url() or settings.QWEN_BASE_URL, km.get_qwen_model() or settings.QWEN_MODEL)
-            health = qwen.health_check()
+            llm = build_llm_service(km, settings)
+        except LLMConfigError as e:
+            return JSONResponse({"success": False, "message": f"Not configured: {e}"}, status_code=400)
+        try:
+            health = llm.health_check()
             return JSONResponse({"success": health["status"] == "healthy", **health})
         except Exception as e:
-            logger.error("qwen_health_check_failed", error=str(e))
+            logger.error("llm_health_check_failed", error=str(e))
             return JSONResponse({"success": False, "error": "Health check failed"}, status_code=500)
 
     if service == "github":
@@ -310,21 +325,15 @@ async def test_api_keys(service: str, user: dict = Depends(get_current_user), db
             logger.error("github_health_check_failed", error=str(e))
             return JSONResponse({"success": False, "error": "Health check failed"}, status_code=500)
 
-    if service == "alibaba":
-        creds = km.get_alibaba_credentials()
-        if not creds or not creds.get("access_key_id") or not creds.get("bucket"):
+    if service in ("storage", "alibaba"):
+        archive = build_audit_archive(km, settings)
+        if archive is None:
             return JSONResponse({"success": False, "message": "Not configured"}, status_code=400)
         try:
-            oss = AlibabaOSSService(
-                access_key_id=creds["access_key_id"],
-                access_key_secret=creds["access_key_secret"],
-                endpoint=creds.get("endpoint") or settings.ALIBABA_OSS_ENDPOINT,
-                bucket_name=creds["bucket"],
-            )
-            health = oss.health_check()
+            health = archive.health_check()
             return JSONResponse({"success": health["status"] == "healthy", **health})
         except Exception as e:
-            logger.error("alibaba_health_check_failed", error=str(e))
+            logger.error("audit_archive_health_check_failed", error=str(e))
             return JSONResponse({"success": False, "error": "Health check failed"}, status_code=500)
 
     return JSONResponse({"success": False, "message": "Invalid service"}, status_code=400)

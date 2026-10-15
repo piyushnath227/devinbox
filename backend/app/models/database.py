@@ -14,19 +14,36 @@ _engine = None
 _SessionLocal = None
 
 
+def normalize_database_url(url: str) -> str:
+    """Accept the URL forms providers hand out (Supabase, Heroku-style
+    `postgres://`, plain `postgresql://`) and pin them to the psycopg 3
+    driver that is in requirements.txt."""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+def is_sqlite(url: str) -> bool:
+    return url.startswith("sqlite")
+
+
 def _create_engine(database_url: str):
     connect_args = {}
     pool_kwargs = {}
 
-    if "sqlite" in database_url:
+    database_url = normalize_database_url(database_url)
+    if is_sqlite(database_url):
         connect_args = {"check_same_thread": False}
-        pool_kwargs = {"poolclass": StaticPool}
+        pool_kwargs = {"poolclass": StaticPool} if ":memory:" in database_url else {}
     else:
-        pool_kwargs = {"pool_pre_ping": True, "pool_recycle": 3600}
+        # Pool sized for several app/worker containers sharing one Postgres.
+        pool_kwargs = {"pool_pre_ping": True, "pool_recycle": 1800, "pool_size": 5, "max_overflow": 5}
 
     engine = create_engine(database_url, connect_args=connect_args, echo=False, **pool_kwargs)
 
-    if "sqlite" in database_url:
+    if is_sqlite(database_url):
         @event.listens_for(engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
@@ -42,8 +59,17 @@ def init_db(database_url: str):
     global _engine, _SessionLocal
     _engine = _create_engine(database_url)
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
-    Base.metadata.create_all(bind=_engine)
-    logger.info("database_initialized")
+    if is_sqlite(database_url):
+        # Zero-config local dev / contributors. Production (Postgres) schema is
+        # owned by Alembic: run `alembic upgrade head` (the Docker image does).
+        Base.metadata.create_all(bind=_engine)
+    logger.info("database_initialized", dialect=_engine.dialect.name)
+
+
+def get_engine():
+    if _engine is None:
+        raise RuntimeError("Database not initialized. Call init_db() first.")
+    return _engine
 
 
 def get_db() -> Generator:

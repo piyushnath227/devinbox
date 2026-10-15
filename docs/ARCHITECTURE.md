@@ -12,10 +12,10 @@ graph TB
         GH[GitHub Repository - upstream]
         FORK[GitHub Fork - contributor account]
         QC[Qwen Cloud API]
-        OSS[Alibaba Cloud OSS]
+        OSS[S3-compatible object store]
     end
 
-    subgraph "Alibaba Cloud ECS - Docker Compose"
+    subgraph "Docker host - Compose"
         subgraph "app container - FastAPI"
             WH[Webhook Handler]
             MT[Manual Trigger - /api/agent/run]
@@ -29,7 +29,7 @@ graph TB
             QS[Qwen Service]
             GS[GitHub Service]
             CS[Crypto Service]
-            OS[Alibaba OSS Service]
+            OS[Audit Archive (local / S3)]
         end
         subgraph Data
             DB[(SQLite/PostgreSQL)]
@@ -66,7 +66,7 @@ graph TB
 6. **Write-access check** — DevInbox checks whether its GitHub token has direct write access to the target repo.
    - **Yes** — a branch is created directly on the repo.
    - **No** — DevInbox forks the repo into the authenticated account, waits for the fork to become ready, and branches there instead.
-7. **Branch + commit + draft PR** — GitHubService commits the changes and opens a **draft** PR — a same-repo PR when working directly, or a cross-repo PR (`fork:branch → upstream:main`) when working from a fork. Diffs and the full pipeline snapshot are archived to Alibaba Cloud OSS.
+7. **Branch + commit + draft PR** — GitHubService commits the changes and opens a **draft** PR — a same-repo PR when working directly, or a cross-repo PR (`fork:branch → upstream:main`) when working from a fork. Diffs and the full pipeline snapshot are archived to S3-compatible object store.
 8. **Human review (HITL)** — A maintainer reviews and comments `/approve`. Approval comments from DevInbox's own authenticated account are ignored, so the agent cannot approve its own work.
 9. **Merge** — Once the PR is out of draft and a genuine external approval is detected, the orchestrator attempts the merge.
    - **Clean merge** — the issue is marked `MERGED` and the merge happens automatically.

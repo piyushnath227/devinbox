@@ -8,7 +8,7 @@ import hmac
 import secrets
 import base64
 from cryptography.fernet import Fernet
-from jose import jwt, JWTError
+import jwt  # PyJWT
 import structlog
 
 logger = structlog.get_logger()
@@ -33,18 +33,28 @@ class CryptoService:
     def verify_token(self, token: str) -> Optional[Dict]:
         try:
             return jwt.decode(token, self.secret_key, algorithms=[self.JWT_ALGORITHM])
-        except JWTError as e:
+        except jwt.PyJWTError as e:
             logger.warning("token_verification_failed", error=str(e))
             return None
 
+    # scrypt (memory-hard, stdlib): ~64 MB and tens of ms per guess, so a leaked
+    # hash is expensive to brute-force. Format: scrypt$N$r$p$salt_hex$hash_hex
+    _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
+
     def hash_password(self, password: str) -> str:
-        salt = secrets.token_hex(32)
-        salted = salt + password
-        hash_value = hashlib.sha256(salted.encode()).hexdigest()
-        return f"{salt}:{hash_value}"
+        salt = secrets.token_bytes(16)
+        digest = hashlib.scrypt(password.encode(), salt=salt, n=self._SCRYPT_N, r=self._SCRYPT_R,
+                                p=self._SCRYPT_P, maxmem=128 * 1024 * 1024, dklen=32)
+        return f"scrypt${self._SCRYPT_N}${self._SCRYPT_R}${self._SCRYPT_P}${salt.hex()}${digest.hex()}"
 
     def verify_password(self, password: str, stored_hash: str) -> bool:
         try:
+            if stored_hash.startswith("scrypt$"):
+                _, n, r, p, salt_hex, hash_hex = stored_hash.split("$")
+                digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=int(n), r=int(r),
+                                        p=int(p), maxmem=128 * 1024 * 1024, dklen=len(hash_hex) // 2)
+                return hmac.compare_digest(digest.hex(), hash_hex)
+            # Legacy "salt:sha256hex" hashes from earlier installs still verify.
             salt, hash_value = stored_hash.split(":")
             computed_hash = hashlib.sha256((salt + password).encode()).hexdigest()
             return hmac.compare_digest(computed_hash, hash_value)

@@ -44,7 +44,7 @@ Use GitHub Issues. Please include:
 
 - Additional Qwen tool-use functions (e.g. `run_tests`, `grep_repo`)
 - Support for GitLab/Bitbucket webhooks alongside GitHub
-- Alternative audit-trail backends (S3-compatible, Alibaba Cloud SLS)
+- Additional audit-archive backends (GCS native, Azure Blob) -- see `services/audit_archive/`
 - Rate-limiting / backpressure handling for high-volume repos
 
 ## Code style

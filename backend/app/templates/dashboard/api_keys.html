@@ -3,41 +3,52 @@
 {% block content %}
 <div class="mb-8">
     <h2 class="text-2xl font-bold text-white flex items-center gap-2"><i data-lucide="key-round" class="w-6 h-6 text-primary-400"></i> API Keys</h2>
-    <p class="text-gray-400 mt-1">Configure your Qwen Cloud and GitHub keys. Encrypted at rest — never touch code.</p>
+    <p class="text-gray-400 mt-1">Configure your LLM provider, GitHub and audit-storage keys. Encrypted at rest — never touch code.</p>
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden">
         <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
-            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="cloud" class="w-4 h-4"></i> Qwen Cloud</h3>
-            <span id="qwen-status" class="px-2.5 py-1 rounded-full text-xs font-medium {% if qwen_configured %}bg-green-900/50 text-green-400{% else %}bg-yellow-900/50 text-yellow-400{% endif %}">
-                {{ 'Configured' if qwen_configured else 'Not Configured' }}
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="cloud" class="w-4 h-4"></i> LLM Provider</h3>
+            <span id="llm-status" class="px-2.5 py-1 rounded-full text-xs font-medium {% if llm_configured %}bg-green-900/50 text-green-400{% else %}bg-yellow-900/50 text-yellow-400{% endif %}">
+                {{ 'Configured' if llm_configured else 'Not Configured' }}
             </span>
         </div>
         <div class="p-6 space-y-4">
             <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Provider</label>
+                <select id="llm-provider" onchange="onProviderChange()" class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white text-sm">
+                    {% for name in llm_presets %}
+                    <option value="{{ name }}" {% if llm_provider == name %}selected{% endif %}>{{ name }}</option>
+                    {% endfor %}
+                </select>
+                <p class="mt-1 text-xs text-gray-500">Any OpenAI-compatible endpoint works. Free options: Gemini (AI Studio key), Groq, OpenRouter free models, or a local Ollama (no key needed).</p>
+            </div>
+            <div>
                 <label class="block text-sm font-medium text-gray-300 mb-2">API Key</label>
-                <input type="password" id="qwen-api-key" placeholder="sk-..."
+                <input type="password" id="llm-api-key" placeholder="provider API key (any text for Ollama)"
                        class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
-                <p class="mt-1 text-xs text-gray-500">Get your key at home.qwencloud.com/api-keys</p>
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
-                <input type="text" id="qwen-base-url" value="{{ qwen_base_url }}"
+                <input type="text" id="llm-base-url" value="{{ llm_base_url }}"
                        class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-300 mb-2">Model</label>
-                <select id="qwen-model" class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white text-sm">
-                    <option value="qwen3.7-plus" {% if qwen_model=='qwen3.7-plus' %}selected{% endif %}>qwen3.7-plus (Balanced)</option>
-                    <option value="qwen3.7-max" {% if qwen_model=='qwen3.7-max' %}selected{% endif %}>qwen3.7-max (Complex Reasoning)</option>
-                </select>
+                <input type="text" id="llm-model" value="{{ llm_model }}" placeholder="model id from your provider's docs"
+                       class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Fallback models <span class="text-gray-500">(optional, comma-separated)</span></label>
+                <input type="text" id="llm-fallbacks" value="{{ llm_fallbacks }}" placeholder="tried in order if the primary model fails"
+                       class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
             </div>
             <div class="flex gap-3 pt-2">
-                <button onclick="saveKeys('qwen')" class="flex-1 px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
-                <button onclick="testKeys('qwen')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
+                <button onclick="saveKeys('llm')" class="flex-1 px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
+                <button onclick="testKeys('llm')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
             </div>
-            <div id="qwen-test-result" class="hidden p-3 rounded-lg text-sm"></div>
+            <div id="llm-test-result" class="hidden p-3 rounded-lg text-sm"></div>
         </div>
     </div>
 
@@ -55,6 +66,12 @@
                        class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <p class="mt-1 text-xs text-gray-500">Create at GitHub → Settings → Developer settings → Tokens (needs <code>repo</code> scope)</p>
             </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Webhook Secret <span class="text-red-400">(required)</span></label>
+                <input type="password" id="github-webhook-secret" placeholder="long random string"
+                       class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <p class="mt-1 text-xs text-gray-500">Paste the same value into the repo's webhook "Secret" field. Generate one with <code>openssl rand -hex 32</code>. Unsigned webhook requests are rejected.</p>
+            </div>
             <div class="flex gap-3 pt-2">
                 <button onclick="saveKeys('github')" class="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
                 <button onclick="testKeys('github')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
@@ -65,40 +82,40 @@
 
     <div class="card-hover animate-fade-in bg-surface-900 border border-gray-800 rounded-xl overflow-hidden lg:col-span-2">
         <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
-            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="database" class="w-4 h-4"></i> Alibaba Cloud OSS <span class="text-xs font-normal text-gray-500">(optional — audit trail archival)</span></h3>
-            <span id="alibaba-status" class="px-2.5 py-1 rounded-full text-xs font-medium {% if alibaba_configured %}bg-green-900/50 text-green-400{% else %}bg-yellow-900/50 text-yellow-400{% endif %}">
-                {{ 'Configured' if alibaba_configured else 'Not Configured' }}
+            <h3 class="text-lg font-semibold text-white flex items-center gap-2"><i data-lucide="database" class="w-4 h-4"></i> S3-Compatible Audit Storage <span class="text-xs font-normal text-gray-500">(optional — audit trail archival)</span></h3>
+            <span id="storage-status" class="px-2.5 py-1 rounded-full text-xs font-medium {% if storage_configured %}bg-green-900/50 text-green-400{% else %}bg-yellow-900/50 text-yellow-400{% endif %}">
+                {{ 'Configured' if storage_configured else 'Not Configured' }}
             </span>
         </div>
         <div class="p-6 space-y-4">
-            <p class="text-xs text-gray-500">Every classification, generated diff, and PR decision is archived as JSON to an OSS bucket, giving you a durable off-box audit trail. Create a RAM user with <code>AliyunOSSFullAccess</code> at the Alibaba Cloud console.</p>
+            <p class="text-xs text-gray-500">Every classification, generated diff, and PR decision is archived as JSON to any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, Backblaze B2, Supabase Storage, ...) for a durable off-box audit trail. Leave blank to archive to local disk (free), or set <code>AUDIT_ARCHIVE_BACKEND=none</code> to disable.</p>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-300 mb-2">AccessKey ID</label>
-                    <input type="text" id="alibaba-access-key-id" placeholder="LTAI..."
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Access Key ID</label>
+                    <input type="text" id="storage-access-key-id" placeholder="AKIA... / access key id"
                            class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-300 mb-2">AccessKey Secret</label>
-                    <input type="password" id="alibaba-access-key-secret" placeholder="••••••••"
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Secret Access Key</label>
+                    <input type="password" id="storage-access-key-secret" placeholder="••••••••"
                            class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-300 mb-2">OSS Endpoint</label>
-                    <input type="text" id="alibaba-endpoint" value="{{ alibaba_endpoint }}"
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Endpoint URL <span class="text-gray-500">(blank = AWS S3)</span></label>
+                    <input type="text" id="storage-endpoint" value="{{ storage_endpoint }}" placeholder="https://&lt;account&gt;.r2.cloudflarestorage.com"
                            class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-300 mb-2">Bucket Name</label>
-                    <input type="text" id="alibaba-bucket" placeholder="devinbox-audit-trail"
+                    <input type="text" id="storage-bucket" placeholder="devinbox-audit-trail"
                            class="w-full px-4 py-3 bg-surface-800 border border-gray-700 rounded-lg text-white font-mono text-sm">
                 </div>
             </div>
             <div class="flex gap-3 pt-2">
-                <button onclick="saveKeys('alibaba')" class="flex-1 px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
-                <button onclick="testKeys('alibaba')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
+                <button onclick="saveKeys('storage')" class="flex-1 px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="save" class="w-4 h-4"></i> Save Keys</button>
+                <button onclick="testKeys('storage')" class="px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-white font-medium rounded-lg flex items-center justify-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Test</button>
             </div>
-            <div id="alibaba-test-result" class="hidden p-3 rounded-lg text-sm"></div>
+            <div id="storage-test-result" class="hidden p-3 rounded-lg text-sm"></div>
         </div>
     </div>
 </div>
@@ -111,22 +128,32 @@
 
 {% block scripts %}
 <script>
+const LLM_PRESETS = {{ llm_presets | tojson }};
+function onProviderChange() {
+    const provider = document.getElementById('llm-provider').value;
+    document.getElementById('llm-base-url').value = LLM_PRESETS[provider] || '';
+}
 async function saveKeys(service) {
     let keys = {};
-    if (service === 'qwen') {
-        const apiKey = document.getElementById('qwen-api-key').value.trim();
-        if (!apiKey) return showToast('Please enter your Qwen Cloud API key', 'error');
-        keys = { api_key: apiKey, base_url: document.getElementById('qwen-base-url').value.trim(), model: document.getElementById('qwen-model').value };
+    if (service === 'llm') {
+        const provider = document.getElementById('llm-provider').value;
+        const apiKey = document.getElementById('llm-api-key').value.trim();
+        const model = document.getElementById('llm-model').value.trim();
+        if (!apiKey && provider !== 'ollama') return showToast('Please enter your LLM API key', 'error');
+        if (!model) return showToast('Please enter a model id', 'error');
+        keys = { provider, api_key: apiKey, base_url: document.getElementById('llm-base-url').value.trim(), model, fallback_models: document.getElementById('llm-fallbacks').value.trim() };
     } else if (service === 'github') {
         const token = document.getElementById('github-token').value.trim();
         if (!token) return showToast('Please enter your GitHub token', 'error');
-        keys = { token };
-    } else if (service === 'alibaba') {
-        const accessKeyId = document.getElementById('alibaba-access-key-id').value.trim();
-        const accessKeySecret = document.getElementById('alibaba-access-key-secret').value.trim();
-        const bucket = document.getElementById('alibaba-bucket').value.trim();
-        if (!accessKeyId || !accessKeySecret || !bucket) return showToast('Please fill in AccessKey ID, Secret, and Bucket', 'error');
-        keys = { access_key_id: accessKeyId, access_key_secret: accessKeySecret, endpoint: document.getElementById('alibaba-endpoint').value.trim(), bucket };
+        const webhookSecret = document.getElementById('github-webhook-secret').value.trim();
+        if (!webhookSecret) return showToast('Please enter a webhook secret (GitHub signs webhooks with it)', 'error');
+        keys = { token, webhook_secret: webhookSecret };
+    } else if (service === 'storage') {
+        const accessKeyId = document.getElementById('storage-access-key-id').value.trim();
+        const accessKeySecret = document.getElementById('storage-access-key-secret').value.trim();
+        const bucket = document.getElementById('storage-bucket').value.trim();
+        if (!accessKeyId || !accessKeySecret || !bucket) return showToast('Please fill in Access Key ID, Secret, and Bucket', 'error');
+        keys = { access_key_id: accessKeyId, access_key_secret: accessKeySecret, endpoint: document.getElementById('storage-endpoint').value.trim(), bucket };
     }
     try {
         const result = await apiRequest('/dashboard/api/keys/save', { method: 'POST', body: JSON.stringify({ service, keys }) });
@@ -134,7 +161,7 @@ async function saveKeys(service) {
             const badge = document.getElementById(`${service}-status`);
             badge.className = 'px-2.5 py-1 rounded-full text-xs font-medium bg-green-900/50 text-green-400';
             badge.textContent = 'Configured';
-            const labels = { qwen: 'Qwen Cloud', github: 'GitHub', alibaba: 'Alibaba Cloud OSS' };
+            const labels = { llm: 'LLM Provider', github: 'GitHub', storage: 'Audit Storage' };
             showToast(`${labels[service] || service} keys saved!`, 'success');
         }
     } catch (e) { showToast(e.message, 'error'); }
@@ -150,10 +177,10 @@ async function testKeys(service) {
         const icon = result.success ? 'check-circle' : 'x-circle';
         const message = result.success ? 'Connection successful!' : (result.error || result.message || 'Connection failed');
         resultDiv.className = `p-3 rounded-lg text-sm ${result.success ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`;
-        resultDiv.innerHTML = `<span class="inline-flex items-center gap-1"><i data-lucide="${icon}" class="w-4 h-4"></i> ${message}</span>`;
+        resultDiv.textContent = message;
     } catch (e) {
         resultDiv.className = 'p-3 rounded-lg text-sm bg-red-900/50 text-red-400';
-        resultDiv.innerHTML = `<span class="inline-flex items-center gap-1"><i data-lucide="x-circle" class="w-4 h-4"></i> ${e.message}</span>`;
+        resultDiv.textContent = e.message;
     } finally {
         lucide.createIcons();
     }

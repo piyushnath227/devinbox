@@ -51,9 +51,9 @@
         </div>
         <div class="p-6 space-y-4">
             <div class="flex items-center justify-between p-3 bg-surface-800 rounded-lg">
-                <span class="text-sm font-medium text-white flex items-center gap-2"><i data-lucide="cloud" class="w-4 h-4 text-gray-400"></i> Qwen Cloud</span>
-                <span class="px-2.5 py-1 rounded-full text-xs font-medium {% if qwen_configured %}bg-green-900/50 text-green-400{% else %}bg-red-900/50 text-red-400{% endif %}">
-                    {{ 'Connected' if qwen_configured else 'Not Configured' }}
+                <span class="text-sm font-medium text-white flex items-center gap-2"><i data-lucide="cloud" class="w-4 h-4 text-gray-400"></i> LLM Provider</span>
+                <span class="px-2.5 py-1 rounded-full text-xs font-medium {% if llm_configured %}bg-green-900/50 text-green-400{% else %}bg-red-900/50 text-red-400{% endif %}">
+                    {{ 'Connected' if llm_configured else 'Not Configured' }}
                 </span>
             </div>
             <div class="flex items-center justify-between p-3 bg-surface-800 rounded-lg">
@@ -90,7 +90,7 @@
     </div>
 </div>
 
-{% if not qwen_configured or not github_configured %}
+{% if not llm_configured or not github_configured %}
 <div class="mt-8 p-5 bg-yellow-900/20 border border-yellow-800 rounded-xl">
     <h3 class="text-lg font-semibold text-yellow-400 flex items-center gap-2"><i data-lucide="rocket" class="w-5 h-5"></i> Quick Setup Required</h3>
     <p class="text-sm text-gray-400 mt-1">Configure your API keys to start using DevInbox.</p>

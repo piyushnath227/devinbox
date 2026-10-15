@@ -7,33 +7,16 @@ session to borrow. This mirrors the logic in routes/webhook.py's
 BackgroundTasks functions; the two paths (queue vs. background task)
 do the same work, just with different session lifecycles.
 """
-from typing import Optional
 import structlog
 
 from .config import get_settings, get_key_manager
 from .models.database import create_session
-from .services.qwen_service import QwenService
+from .services.llm_service import build_llm_service, LLMConfigError
 from .services.github_service import GitHubService
 from .services.agent_orchestrator import AgentOrchestrator
-from .services.alibaba_oss_service import AlibabaOSSService
+from .services.audit_archive import build_audit_archive
 
 logger = structlog.get_logger()
-
-
-def _build_oss_service(km) -> Optional[AlibabaOSSService]:
-    creds = km.get_alibaba_credentials()
-    if not creds or not creds.get("access_key_id") or not creds.get("access_key_secret") or not creds.get("bucket"):
-        return None
-    try:
-        return AlibabaOSSService(
-            access_key_id=creds["access_key_id"],
-            access_key_secret=creds["access_key_secret"],
-            endpoint=creds.get("endpoint") or "https://oss-ap-southeast-1.aliyuncs.com",
-            bucket_name=creds["bucket"],
-        )
-    except Exception as e:
-        logger.warning("oss_service_init_failed", error=str(e))
-        return None
 
 
 def process_issue_job(repo_full_name: str, issue_number: int, title: str,
@@ -45,18 +28,19 @@ def process_issue_job(repo_full_name: str, issue_number: int, title: str,
     try:
         km = get_key_manager()
         settings = get_settings()
-        qwen_key = km.get_qwen_api_key()
         github_token = km.get_github_token()
-        if not qwen_key or not github_token:
+        if not github_token:
             logger.error("worker_job_missing_keys", repo=repo_full_name, issue=issue_number)
-            return
+            raise LLMConfigError("GitHub token missing")
 
-        qwen = QwenService(qwen_key, km.get_qwen_base_url() or settings.QWEN_BASE_URL, km.get_qwen_model() or settings.QWEN_MODEL)
+        llm = build_llm_service(km, settings)  # raises LLMConfigError -> RQ marks job failed (visible, retryable)
         github = GitHubService(github_token)
-        oss = _build_oss_service(km)
+        archive = build_audit_archive(km, settings)
 
-        orchestrator = AgentOrchestrator(qwen, github, db, oss_service=oss)
-        orchestrator.process_issue(repo_full_name, issue_number, title, body, author, labels)
+        orchestrator = AgentOrchestrator(llm, github, db, audit_archive=archive)
+        result = orchestrator.process_issue(repo_full_name, issue_number, title, body, author, labels)
+        if result.get("status") == "failed":
+            raise RuntimeError("Issue pipeline failed")
         logger.info("worker_job_completed", repo=repo_full_name, issue=issue_number)
     except Exception as e:
         logger.error("worker_job_failed", repo=repo_full_name, issue=issue_number, error=str(e), exc_info=True)
@@ -74,13 +58,13 @@ def check_and_merge_job(repo_full_name: str):
         github_token = km.get_github_token()
         if not github_token:
             logger.error("worker_merge_job_missing_token", repo=repo_full_name)
-            return
+            raise LLMConfigError("GitHub token missing")
 
         github = GitHubService(github_token)
-        qwen = QwenService(km.get_qwen_api_key() or "", km.get_qwen_base_url() or settings.QWEN_BASE_URL)
-        oss = _build_oss_service(km)
+        llm = None  # merge checks do not need an LLM
+        archive = build_audit_archive(km, settings)
 
-        orchestrator = AgentOrchestrator(qwen, github, db, oss_service=oss)
+        orchestrator = AgentOrchestrator(llm, github, db, audit_archive=archive)
         orchestrator.check_and_merge_approved_prs(repo_full_name)
         logger.info("worker_merge_job_completed", repo=repo_full_name)
     except Exception as e:
@@ -88,3 +72,45 @@ def check_and_merge_job(repo_full_name: str):
         raise
     finally:
         db.close()
+
+
+def execute_job(job_id: str, dispatch_token: str):
+    """RQ notification handler. SQL owns state/retries; stale notifications are no-ops."""
+    from .models.database import init_db
+    from .services.job_service import claim, finish
+    from .services.patch_service import PatchError
+    from .services.llm_service import LLMConfigError
+    settings = get_settings()
+    # RQ forks: never reuse a parent's SQL connections in the child.
+    init_db(settings.DATABASE_URL)
+    with create_session() as db:
+        job = claim(db, job_id, dispatch_token)
+        if job is None:
+            return {'status': 'stale_notification'}
+        try:
+            km = get_key_manager()
+            token = km.get_github_token()
+            if not token:
+                raise LLMConfigError('GitHub credentials are not configured')
+            github = GitHubService(token)
+            llm = build_llm_service(km, settings) if job.kind == 'issue' else None
+            orchestrator = AgentOrchestrator(llm, github, db, audit_archive=build_audit_archive(km, settings))
+            if job.kind == 'issue':
+                issue = github.get_repository(job.repository).get_issue(number=job.payload['issue_number'])
+                if issue.pull_request is not None or issue.state != 'open':
+                    raise PatchError('Target must be an open issue, not a pull request')
+                result = orchestrator.process_issue(job.repository, issue.number, issue.title, issue.body or '',
+                                                    issue.user.login if issue.user else 'unknown', [x.name for x in issue.labels])
+            else:
+                result = orchestrator.check_and_merge_approved_prs(job.repository, job.payload.get('pr_number'))
+            if result.get('status') == 'failed':
+                finish(db, job_id, dispatch_token, result=result, error='Pipeline failed; see activity log', retryable=result.get('retryable', True))
+                raise RuntimeError('Pipeline failed; durable retry policy recorded')
+            finish(db, job_id, dispatch_token, result=result)
+            return result
+        except Exception as exc:
+            db.rollback()
+            finish(db, job_id, dispatch_token, error='Execution failed; inspect server logs',
+                   retryable=not isinstance(exc, (PatchError, LLMConfigError, ValueError)))
+            logger.exception('execution_failed', job_id=job_id)
+            raise

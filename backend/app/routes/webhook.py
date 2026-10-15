@@ -1,23 +1,16 @@
 """GitHub webhook receiver. Validates the HMAC-SHA256 signature, then
-triggers the agent pipeline as a background task so we respond to
-GitHub within its timeout window."""
+persists a durable job before acknowledging delivery."""
 
 import hmac
 import hashlib
 import json
-from typing import Optional
-from fastapi import APIRouter, Request, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 import structlog
 
 from ..config import get_settings, get_key_manager
 from ..models.database import get_db
-from ..services.qwen_service import QwenService
-from ..services.github_service import GitHubService
-from ..services.agent_orchestrator import AgentOrchestrator
-from ..services.alibaba_oss_service import AlibabaOSSService
-from ..services import queue_service
 
 logger = structlog.get_logger()
 router = APIRouter(tags=["webhooks"])
@@ -36,131 +29,65 @@ def verify_github_signature(request_body: bytes, signature_header: str, secret: 
     return hmac.compare_digest(mac.hexdigest(), signature)
 
 
+def resolve_webhook_secret(km, settings) -> str:
+    """Dashboard-saved secret wins; falls back to the WEBHOOK_SECRET env var."""
+    return (km.get_webhook_secret() or settings.WEBHOOK_SECRET or "").strip()
+
+
 @router.post("/webhook/github")
-async def github_webhook(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    raw_body = await request.body()
-    payload = json.loads(raw_body)
-    event_type = request.headers.get("X-GitHub-Event", "")
-
-    logger.info("webhook_received", event_type=event_type)
-
-    if event_type == "ping":
-        return JSONResponse({"status": "ok", "message": "Webhook configured successfully"})
-
-    if event_type == "issues":
-        action = payload.get("action", "")
-        if action in ("opened", "reopened", "labeled"):
-            issue_data = payload.get("issue", {})
-            repo_data = payload.get("repository", {})
-            repo_full_name = repo_data.get("full_name", "")
-            issue_number = issue_data.get("number")
-
-            if not repo_full_name or not issue_number:
-                return JSONResponse({"status": "error", "message": "Missing data"}, status_code=400)
-
-            job_id = queue_service.enqueue_issue_job(
-                repo_full_name=repo_full_name,
-                issue_number=issue_number,
-                title=issue_data.get("title", ""),
-                body=issue_data.get("body", "") or "",
-                author=issue_data.get("user", {}).get("login", "unknown"),
-                labels=[l["name"] for l in issue_data.get("labels", [])],
-            )
-            if job_id:
-                logger.info("issue_routed_to_queue", job_id=job_id, repo=repo_full_name, issue=issue_number)
-                return JSONResponse({"status": "queued", "repo": repo_full_name, "job_id": job_id})
-
-            # Redis not configured/available -- fall back to an in-process
-            # background task so the app works with zero extra services.
-            background_tasks.add_task(
-                process_issue_background,
-                repo_full_name=repo_full_name,
-                issue_number=issue_number,
-                title=issue_data.get("title", ""),
-                body=issue_data.get("body", "") or "",
-                author=issue_data.get("user", {}).get("login", "unknown"),
-                labels=[l["name"] for l in issue_data.get("labels", [])],
-                db=db,
-            )
-            return JSONResponse({"status": "received", "repo": repo_full_name})
-    elif event_type == "issue_comment":
-        if payload.get("action") == "created":
-            comment_body = payload.get("comment", {}).get("body", "")
-            if "/approve" in comment_body:
-                repo_full_name = payload.get("repository", {}).get("full_name", "")
-                job_id = queue_service.enqueue_merge_check_job(repo_full_name)
-                if not job_id:
-                    background_tasks.add_task(check_and_merge_background, repo_full_name=repo_full_name, db=db)
-            return JSONResponse({"status": "received"})
-
-    return JSONResponse({"status": "ignored", "event": event_type})
-
-
-def _build_oss_service(km) -> Optional[AlibabaOSSService]:
-    """Build the OSS archival service, or return None if not configured.
-
-    OSS archival is an enhancement to the audit trail, not a hard
-    requirement, so this never raises.
-    """
-    creds = km.get_alibaba_credentials()
-    if not creds or not creds.get("access_key_id") or not creds.get("access_key_secret") or not creds.get("bucket"):
-        return None
+async def github_webhook(request: Request, db: Session = Depends(get_db)):
+    from starlette.concurrency import run_in_threadpool
+    from ..services.job_service import admit, AdmissionLimited
+    import re
+    settings = get_settings()
+    raw_body = bytearray()
+    async for chunk in request.stream():
+        raw_body.extend(chunk)
+        if len(raw_body) > getattr(settings, "MAX_WEBHOOK_BYTES", 1_000_000):
+            return JSONResponse({"error": "Payload too large"}, status_code=413)
+    if settings.REQUIRE_WEBHOOK_SIGNATURE:
+        secret = await run_in_threadpool(resolve_webhook_secret, get_key_manager(), settings)
+        if not secret:
+            return JSONResponse({"error": "Webhook secret not configured"}, status_code=503)
+        if not verify_github_signature(bytes(raw_body), request.headers.get("X-Hub-Signature-256", ""), secret):
+            return JSONResponse({"error": "Invalid signature"}, status_code=401)
     try:
-        return AlibabaOSSService(
-            access_key_id=creds["access_key_id"],
-            access_key_secret=creds["access_key_secret"],
-            endpoint=creds.get("endpoint") or "https://oss-ap-southeast-1.aliyuncs.com",
-            bucket_name=creds["bucket"],
-        )
-    except Exception as e:
-        logger.warning("oss_service_init_failed", error=str(e))
-        return None
-
-
-def process_issue_background(repo_full_name, issue_number, title, body, author, labels, db: Session):
-    """FIX #2: Improved error handling in background tasks with better logging."""
+        payload = json.loads(raw_body)
+        if not isinstance(payload, dict):
+            raise ValueError()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "Invalid JSON object"}, status_code=400)
+    event = request.headers.get("X-GitHub-Event", "")
+    if event == "ping":
+        return JSONResponse({"status": "ok"})
     try:
-        km = get_key_manager()
-        settings = get_settings()
-        qwen_key = km.get_qwen_api_key()
-        github_token = km.get_github_token()
-        if not qwen_key or not github_token:
-            logger.error("background_processing_missing_keys", repo=repo_full_name, issue=issue_number)
-            return
-
-        try:
-            qwen = QwenService(qwen_key, km.get_qwen_base_url() or settings.QWEN_BASE_URL, km.get_qwen_model() or settings.QWEN_MODEL)
-            github = GitHubService(github_token)
-        except ValueError as e:
-            logger.error("background_service_init_failed", repo=repo_full_name, issue=issue_number, error=str(e))
-            return
-        
-        oss = _build_oss_service(km)
-        orchestrator = AgentOrchestrator(qwen, github, db, oss_service=oss)
-        orchestrator.process_issue(repo_full_name, issue_number, title, body, author, labels)
-    except Exception as e:
-        logger.error("background_processing_error", repo=repo_full_name, issue=issue_number, error=str(e), exc_info=True)
-
-
-def check_and_merge_background(repo_full_name, db: Session):
-    """FIX #2: Improved error handling in background tasks."""
+        repo = payload.get("repository", {}).get("full_name", "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or len(repo) > 200:
+            raise ValueError()
+        issue = payload.get("issue", {})
+        number = issue.get("number")
+        if type(number) is not int or number < 1:
+            raise ValueError()
+        data = {"issue_number": number}
+        if event == "issues" and payload.get("action") in ("opened", "reopened", "labeled"):
+            label = getattr(settings, "AGENT_REQUIRED_LABEL", "devinbox")
+            labels = [item["name"] for item in issue.get("labels", [])]
+            if label and label not in labels:
+                return JSONResponse({"status": "ignored", "reason": "Opt-in label required"})
+            kind = "issue"
+        elif event == "issue_comment" and payload.get("action") == "created" and issue.get("pull_request"):
+            if not re.search(r"^/approve [0-9a-f]{40}$", payload.get("comment", {}).get("body", ""), re.MULTILINE):
+                return JSONResponse({"status": "ignored"})
+            kind, data = "merge", {"pr_number": number}
+        else:
+            return JSONResponse({"status": "ignored"})
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return JSONResponse({"error": "Invalid event payload"}, status_code=400)
+    delivery = request.headers.get("X-GitHub-Delivery", "")
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,128}", delivery):
+        return JSONResponse({"error": "Missing or invalid delivery ID"}, status_code=400)
     try:
-        km = get_key_manager()
-        settings = get_settings()
-        github_token = km.get_github_token()
-        if not github_token:
-            logger.error("background_merge_missing_github_token", repo=repo_full_name)
-            return
-        
-        try:
-            github = GitHubService(github_token)
-            qwen = QwenService(km.get_qwen_api_key() or "", km.get_qwen_base_url() or settings.QWEN_BASE_URL)
-        except ValueError as e:
-            logger.error("background_merge_service_init_failed", repo=repo_full_name, error=str(e))
-            return
-        
-        oss = _build_oss_service(km)
-        orchestrator = AgentOrchestrator(qwen, github, db, oss_service=oss)
-        orchestrator.check_and_merge_approved_prs(repo_full_name)
-    except Exception as e:
-        logger.error("background_merge_error", repo=repo_full_name, error=str(e), exc_info=True)
+        job, created = await run_in_threadpool(admit, db, kind, repo, data, delivery, getattr(settings, "MAX_JOBS_PER_MINUTE", 20))
+    except AdmissionLimited:
+        return JSONResponse({"error": "Admission limit reached"}, status_code=429, headers={"Retry-After": "60"})
+    return JSONResponse({"status": "queued" if created else "duplicate", "job_id": job.id}, status_code=202)

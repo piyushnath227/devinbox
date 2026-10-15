@@ -2,8 +2,10 @@
 automation and comment-based approval detection."""
 
 import datetime
+import re
 from typing import Optional, Dict, Any
-from github import Github, GithubException
+from github import Github, GithubException, InputGitTreeElement
+from .patch_service import apply_patch, PatchError
 import structlog
 
 logger = structlog.get_logger()
@@ -11,6 +13,11 @@ logger = structlog.get_logger()
 
 class GitHubService:
     APPROVAL_COMMAND = "/approve"
+    # `/approve` must be on its own line (so quoting it in prose doesn't count)
+    # and come from someone with real write access to the repo -- otherwise any
+    # GitHub user could merge the agent's PR on a public repository.
+    _APPROVE_LINE = re.compile(r"^/approve ([0-9a-f]{40})$", re.MULTILINE)
+    APPROVER_PERMISSIONS = frozenset({"admin", "maintain", "write"})
     BRANCH_PREFIX = "devinbox"
 
     def __init__(self, access_token: str):
@@ -21,7 +28,7 @@ class GitHubService:
             logger.info("github_service_initialized", authenticated_as=self.authenticated_user)
         except GithubException as e:
             logger.error("github_auth_failed", error=str(e))
-            raise ValueError(f"Invalid GitHub token: {e}")
+            raise ValueError(f"Invalid GitHub token: {e}") from e
 
     def get_repository(self, repo_full_name: str):
         return self.client.get_repo(repo_full_name)
@@ -91,8 +98,7 @@ class GitHubService:
         substring). Note this does NOT search file contents -- GitHub gives
         no REST endpoint for full-text search on arbitrary refs."""
         try:
-            branch_ref = repo.get_git_ref(f"heads/{ref}")
-            tree = repo.get_git_tree(branch_ref.object.sha, recursive=True)
+            tree = repo.get_git_tree(ref, recursive=True)
             query_lower = query.lower()
             matches = []
             for item in tree.tree:
@@ -215,11 +221,12 @@ class GitHubService:
         logger.error("fork_ready_timeout", fork=fork_full_name, branch=base_branch, timeout_s=timeout_s)
         return False
 
-    def create_fix_branch(self, repo_full_name: str, issue_number: int, base_branch: str = "main") -> Dict[str, Any]:
+    def create_fix_branch(self, repo_full_name: str, issue_number: int, base_branch: Optional[str] = None) -> Dict[str, Any]:
         """FIX #6: Validates base_branch exists before attempting to create branch."""
         try:
             repo = self.get_repository(repo_full_name)
             
+            base_branch = base_branch or repo.default_branch
             # Validate that base_branch exists
             try:
                 base_ref = repo.get_git_ref(f"heads/{base_branch}")
@@ -238,6 +245,75 @@ class GitHubService:
         except GithubException as e:
             logger.error("branch_creation_failed", error=str(e), status=getattr(e, 'status', None))
             return {"success": False, "error": str(e)}
+
+    def find_existing_fix_pr(self, repo_full_name, issue_number):
+        repo = self.get_repository(repo_full_name)
+        branch = f"devinbox/issue-{issue_number}"
+        for owner in {repo_full_name.split('/')[0], self.authenticated_user}:
+            for pr in repo.get_pulls(state="all", head=f"{owner}:{branch}"):
+                if pr.user.login == self.authenticated_user and pr.head.ref == branch:
+                    return pr
+        return None
+
+    def prepare_patch_set(self, repo_full_name: str, base_sha: str, changes: list) -> list:
+        repo = self.get_repository(repo_full_name)
+        prepared, seen = [], set()
+        tree = repo.get_git_tree(repo.get_git_commit(base_sha).tree.sha, recursive=True)
+        if tree.truncated:
+            raise PatchError("Repository tree is truncated; cannot validate file modes")
+        modes = {item.path: item.mode for item in tree.tree}
+        for change in changes:
+            path = change["file"]
+            if path in seen:
+                raise PatchError("Duplicate target file")
+            seen.add(path)
+            original = None
+            if path in modes:
+                if modes[path] not in ("100644", "100755"):
+                    raise PatchError("Only regular files may be patched")
+                source = repo.get_contents(path, ref=base_sha)
+                if source.size > 500_000:
+                    raise PatchError("Source file exceeds size limit")
+                original = source.decoded_content.decode("utf-8")
+            content = apply_patch(original, change["code_diff"], path)
+            prepared.append({"path": path, "content": content, "mode": modes.get(path, "100644")})
+        return prepared
+
+    def commit_patch_set(self, repo_full_name: str, branch: str, base_sha: str, files: list, message: str):
+        """Publish one atomic tree/commit, only onto the expected base."""
+        repo = self.get_repository(repo_full_name)
+        ref = repo.get_git_ref(f"heads/{branch}")
+        if ref.object.sha != base_sha:
+            # Recovery after publishing a commit but before saving its checkpoint.
+            commit = repo.get_git_commit(ref.object.sha)
+            if commit.message == message and [p.sha for p in commit.parents] == [base_sha]:
+                # A matching message alone cannot establish that this is our output.
+                import hashlib
+                expected = {}
+                for file in files:
+                    data = file["content"].encode("utf-8")
+                    blob_sha = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                    expected[file["path"]] = (file["mode"], blob_sha)
+                base_tree = repo.get_git_tree(repo.get_git_commit(base_sha).tree.sha, recursive=True)
+                actual_tree = repo.get_git_tree(commit.tree.sha, recursive=True)
+                if base_tree.truncated or actual_tree.truncated:
+                    raise PatchError("Cannot verify recovered commit: truncated tree")
+                desired = {x.path: (x.mode, x.sha) for x in base_tree.tree if x.type != "tree"}
+                desired.update(expected)
+                actual = {x.path: (x.mode, x.sha) for x in actual_tree.tree if x.type != "tree"}
+                if actual == desired:
+                    return ref.object.sha
+                raise PatchError("Recovered commit does not match the validated patch set")
+            raise PatchError("Branch changed; refusing to overwrite it")
+        parent = repo.get_git_commit(base_sha)
+        elements = []
+        for file in files:
+            blob = repo.create_git_blob(file["content"], "utf-8")
+            elements.append(InputGitTreeElement(path=file["path"], mode=file["mode"], type="blob", sha=blob.sha))
+        tree = repo.create_git_tree(elements, base_tree=parent.tree)
+        commit = repo.create_git_commit(message, tree, [parent])
+        ref.edit(commit.sha, force=False)
+        return commit.sha
 
     def commit_changes(self, repo_full_name: str, branch_name: str, file_path: str, content: str, commit_message: str) -> Dict[str, Any]:
         try:
@@ -261,7 +337,7 @@ class GitHubService:
         branch_name: str,
         title: str,
         body: str,
-        base_branch: str = "main",
+        base_branch: Optional[str] = None,
         draft: bool = True,
         head_owner: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -278,7 +354,7 @@ class GitHubService:
         try:
             repo = self.get_repository(repo_full_name)
             head = f"{head_owner}:{branch_name}" if head_owner else branch_name
-            pr = repo.create_pull(title=title, body=body, head=head, base=base_branch, draft=draft)
+            pr = repo.create_pull(title=title, body=body, head=head, base=base_branch or repo.default_branch, draft=draft)
             logger.info("pr_created", repo=repo_full_name, pr_number=pr.number, cross_repo=bool(head_owner))
             return {"success": True, "pr_number": pr.number, "pr_url": pr.html_url}
         except GithubException as e:
@@ -295,26 +371,62 @@ class GitHubService:
             logger.error("comment_failed", error=str(e), status=getattr(e, 'status', None))
             return {"success": False, "error": str(e)}
 
+    def _can_approve(self, repo, login: str, cache: Dict[str, bool]) -> bool:
+        """True only if `login` has write/maintain/admin permission on the repo."""
+        if login not in cache:
+            try:
+                cache[login] = repo.get_collaborator_permission(login) in self.APPROVER_PERMISSIONS
+            except GithubException as e:
+                logger.warning("approver_permission_check_failed", login=login, error=str(e))
+                cache[login] = False  # fail closed
+        return cache[login]
+
     def check_for_approval(self, repo_full_name: str, pr_number: int) -> Dict[str, Any]:
         try:
             repo = self.get_repository(repo_full_name)
             pr = repo.get_pull(pr_number)
+            permission_cache: Dict[str, bool] = {}
             for comment in pr.get_issue_comments():
-                if self.APPROVAL_COMMAND in comment.body and comment.user.login != self.authenticated_user:
-                    return {"approved": True, "approved_by": comment.user.login}
+                login = comment.user.login if comment.user else None
+                if not login or login == self.authenticated_user:
+                    continue
+                match = self._APPROVE_LINE.search(comment.body or "")
+                if not match or match.group(1) != pr.head.sha:
+                    continue
+                if self._can_approve(repo, login, permission_cache):
+                    return {"approved": True, "approved_by": login, "head_sha": pr.head.sha}
+                logger.warning("approval_ignored_insufficient_permission", repo=repo_full_name, pr=pr_number, login=login)
             return {"approved": False}
         except GithubException as e:
             logger.error("approval_check_failed", error=str(e), status=getattr(e, 'status', None))
             return {"approved": False, "error": str(e)}
 
-    def merge_pull_request(self, repo_full_name: str, pr_number: int, merge_method: str = "squash") -> Dict[str, Any]:
+    def merge_pull_request(self, repo_full_name: str, pr_number: int, merge_method: str = "squash", expected_sha: Optional[str] = None) -> Dict[str, Any]:
         try:
             repo = self.get_repository(repo_full_name)
             pr = repo.get_pull(pr_number)
-            if not pr.mergeable:
+            if not expected_sha or pr.head.sha != expected_sha:
+                return {"success": False, "error": "A fresh approval for the current head SHA is required"}
+            if pr.draft:
+                return {"success": False, "error": "Mark this draft ready for review in GitHub before approving"}
+            if pr.mergeable is None:
+                return {"success": False, "error": "Mergeability pending; retry shortly"}
+            if pr.mergeable is False:
                 logger.warning("pr_not_mergeable", repo=repo_full_name, pr_number=pr_number)
                 return {"success": False, "error": "PR has conflicts and cannot be merged"}
-            result = pr.merge(merge_method=merge_method)
+            commit = repo.get_commit(expected_sha)
+            combined = commit.get_combined_status()
+            statuses = list(combined.statuses)
+            checks = list(commit.get_check_runs())
+            if not statuses and not checks:
+                return {"success": False, "error": "Passing CI is required before automatic merge"}
+            if statuses and combined.state != "success":
+                return {"success": False, "error": "Commit status checks have not passed"}
+            if any(check.status != "completed" or check.conclusion not in ("success", "neutral", "skipped") for check in checks):
+                return {"success": False, "error": "CI check runs have not passed"}
+            if not statuses and not any(check.conclusion == "success" for check in checks):
+                return {"success": False, "error": "At least one successful CI check is required"}
+            result = pr.merge(merge_method=merge_method, sha=expected_sha)
             return {"success": result.merged}
         except GithubException as e:
             logger.error("pr_merge_failed", error=str(e), status=getattr(e, 'status', None))

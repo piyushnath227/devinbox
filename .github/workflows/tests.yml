@@ -1,26 +1,121 @@
-name: Tests
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"   # weekly: new CVEs are published without any code change
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  lint-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
-          cache-dependency-path: backend/requirements.txt
-
-      - name: Install dependencies
-        run: pip install -r backend/requirements.txt
-
-      - name: Run test suite
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Lint (correctness rules, see ruff.toml)
+        run: ruff check backend tests
+      - name: Unit tests (SQLite, no external services)
         run: pytest tests/ -v
+
+  postgres-integration:
+    # Proves the real production path: Alembic migrations on Postgres, no schema
+    # drift between models and migrations, and a clean downgrade/upgrade cycle.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devinbox
+          POSTGRES_PASSWORD: devinbox
+          POSTGRES_DB: devinbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U devinbox" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://devinbox:devinbox@localhost:5432/devinbox
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-only-secret-key-not-used-anywhere-else
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Migrate up / down / up
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+      - name: Fail if models and migrations have drifted
+        working-directory: backend
+        run: alembic check
+      - name: Readiness and DB-backed secrets against real Postgres + Redis
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, "backend")
+          import os
+          from app.models.database import init_db
+          from app.config.key_manager import KeyManager
+          from app.config.secret_store import DbSecretStore
+          from app.health import readiness, verify_schema_current_or_raise
+          init_db(os.environ["DATABASE_URL"])
+          verify_schema_current_or_raise()
+          ok, comp = readiness(os.environ["REDIS_URL"], check_schema=True)
+          assert ok, comp
+          a = KeyManager("/tmp/hostA", "k", store=DbSecretStore()); b = KeyManager("/tmp/hostB", "k", store=DbSecretStore())
+          a.save_keys("github", {"token": "t"}); assert b.get_github_token() == "t"
+          print("OK:", {k: v["status"] for k, v in comp.items()})
+          PY
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.0
+      - name: Known-vulnerability scan of pinned runtime dependencies
+        run: pip-audit -r backend/requirements.txt --progress-spinner off
+
+  docker:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: ci-only-secret-key
+      POSTGRES_PASSWORD: ci-only-password
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose files
+        run: |
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.dev.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.minio.yml config -q
+      - name: Build image
+        run: docker build -t devinbox:ci .
+      - name: Image starts and serves /health (SQLite mode)
+        run: |
+          docker run -d --name di -e SECRET_KEY=ci-only-secret-key-for-smoke-test-0123456789 \
+            -e ADMIN_BOOTSTRAP_PASSWORD=ci-bootstrap-password-0123456789 \
+            -e DATABASE_URL=sqlite:///./data/devinbox.db -p 8000:8000 devinbox:ci
+          for i in $(seq 1 20); do curl -fsS localhost:8000/health && exit 0; sleep 2; done
+          docker logs di; exit 1

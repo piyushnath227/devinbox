@@ -1,0 +1,21 @@
+# Automatic HTTPS (Let's Encrypt) for a public domain; self-signed for localhost.
+# Set DOMAIN in .env (e.g. devinbox.example.com). DNS A record must point at this host.
+{$DOMAIN:localhost} {
+	encode gzip zstd
+
+	# Security headers (the app serves the dashboard and the GitHub webhook receiver).
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# Caddy sets X-Forwarded-For to the real client IP; the app only trusts it
+	# from this proxy's fixed address (TRUSTED_PROXY_IPS in docker-compose.yml).
+	reverse_proxy app:8000 {
+		health_uri /health
+		health_interval 15s
+	}
+}

@@ -1,80 +1,162 @@
-version: '3.8'
+# Production stack: Caddy (HTTPS) -> app -> Postgres + Redis, plus RQ workers.
+#   cp .env.example .env   # set SECRET_KEY, POSTGRES_PASSWORD, DOMAIN
+#   docker compose up -d --build
+#   docker compose up -d --scale worker=3     # more concurrency = more workers
+# For a lightweight local setup (SQLite, no proxy) use docker-compose.dev.yml.
+
+x-app-env: &app-env
+  APP_NAME: DevInbox
+  DEBUG: "false"
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env (python -c "import secrets; print(secrets.token_hex(32))")}
+  DATABASE_URL: ${DATABASE_URL:-postgresql://devinbox:${POSTGRES_PASSWORD}@postgres:5432/devinbox}
+  REDIS_URL: redis://redis:6379/0
+  AGENT_REQUIRED_LABEL: ${AGENT_REQUIRED_LABEL:-devinbox}
+  MAX_JOBS_PER_MINUTE: ${MAX_JOBS_PER_MINUTE:-20}
+  TRUSTED_PROXY_IPS: 172.28.0.10          # Caddy's fixed address on devinbox-network
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+  # LLM: leave unset to configure provider/key/model in the dashboard instead.
+  # Deliberately NO provider-specific defaults here, so a provider preset can't be
+  # silently overridden by a stale base URL.
+  LLM_PROVIDER: ${LLM_PROVIDER:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+  LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-4}
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+  ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+  AUDIT_ARCHIVE_BACKEND: ${AUDIT_ARCHIVE_BACKEND:-auto}
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+  S3_REGION: ${S3_REGION:-}
+  S3_ADDRESSING_STYLE: ${S3_ADDRESSING_STYLE:-auto}
+  KEYS_DIR: /app/data/keys
 
 services:
-  app:
-    build: .
-    container_name: devinbox-app
+  caddy:
+    image: caddy:2-alpine
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "80:80"
+      - "443:443"
     environment:
-      - APP_NAME=DevInbox
-      - DEBUG=false
-      - HOST=0.0.0.0
-      - PORT=8000
-      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
-      - DATABASE_URL=sqlite:///./data/devinbox.db
-      - QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-      - QWEN_MODEL=qwen3.7-plus
-      - QWEN_MAX_TOKENS=4096
-      - QWEN_TEMPERATURE=0.2
-      - KEYS_DIR=./data/keys
-      - REDIS_URL=redis://redis:6379/0
-      - MAX_JOBS_PER_MINUTE=20
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      devinbox-network:
+        ipv4_address: 172.28.0.10
+
+  migrate:
+    build: .
+    command: ["true"]
+    restart: "no"
+    environment:
+      <<: *app-env
+      RUN_MIGRATIONS: "1"
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [devinbox-network]
+
+  dispatcher:
+    build: .
+    command: python backend/dispatcher.py
+    restart: unless-stopped
+    environment: *app-env
+    volumes: [devinbox_data:/app/data]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; assert time.time()-os.stat('/tmp/devinbox-dispatcher-heartbeat').st_mtime < 60"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks: [devinbox-network]
+
+  app:
+    build: .
+    restart: unless-stopped
+    expose: ["8000"]            # reachable only through Caddy, never published directly
+    environment: *app-env
+    healthcheck:
+      # /ready checks Postgres, the schema version and Redis (not just "process is up")
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     volumes:
       - devinbox_data:/app/data
     depends_on:
-      - redis
-    networks:
-      - devinbox-network
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    networks: [devinbox-network]
 
   worker:
     build: .
-    container_name: devinbox-worker
-    restart: unless-stopped
     command: python backend/worker.py
+    restart: unless-stopped
+    stop_grace_period: 660s       # let an in-flight job finish on `docker compose down/up`
+    environment: *app-env
     healthcheck:
-      # No web server to ping here (unlike `app`) -- instead, ask Redis
-      # whether this process is currently registered as an active RQ
-      # worker. This actually confirms it's alive and connected, not just
-      # that some process happens to be running.
-      test: ["CMD-SHELL", "python -c \"import os,sys,redis; from rq import Worker; conn=redis.from_url(os.environ['REDIS_URL']); sys.exit(0 if Worker.all(connection=conn) else 1)\""]
+      # Check this container's worker and heartbeat, not any worker in the fleet.
+      test: ["CMD", "python", "backend/worker_health.py"]
       interval: 30s
       timeout: 10s
-      start_period: 10s
+      start_period: 15s
       retries: 3
-    environment:
-      - APP_NAME=DevInbox
-      - DEBUG=false
-      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
-      - DATABASE_URL=sqlite:///./data/devinbox.db
-      - QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-      - QWEN_MODEL=qwen3.7-plus
-      - KEYS_DIR=./data/keys
-      - REDIS_URL=redis://redis:6379/0
-      - MAX_JOBS_PER_MINUTE=20
     volumes:
       - devinbox_data:/app/data
     depends_on:
-      - redis
-    networks:
-      - devinbox-network
-    # To increase concurrency, scale this service instead of raising a
-    # single worker's internal concurrency, e.g.: docker compose up -d --scale worker=3
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    networks: [devinbox-network]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: devinbox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: devinbox
+    volumes:
+      - devinbox_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devinbox -d devinbox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [devinbox-network]
 
   redis:
     image: redis:7-alpine
-    container_name: devinbox-redis
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]   # queue survives restarts
     volumes:
       - devinbox_redis_data:/data
-    networks:
-      - devinbox-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [devinbox-network]
 
 volumes:
   devinbox_data:
+  devinbox_pg_data:
   devinbox_redis_data:
+  caddy_data:
+  caddy_config:
 
 networks:
   devinbox-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

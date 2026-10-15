@@ -1,0 +1,24 @@
+# Optional: free, self-hosted S3-compatible storage. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.minio.yml up -d --build
+# Then in .env: AUDIT_ARCHIVE_BACKEND=s3  S3_BUCKET=devinbox-audit
+#               S3_ENDPOINT_URL=http://minio:9000  S3_ADDRESSING_STYLE=path
+# and save MINIO_ROOT_USER / MINIO_ROOT_PASSWORD as the access key / secret in the dashboard.
+# Create the bucket once via the console at http://localhost:9001.
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: devinbox-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-devinbox}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    volumes:
+      - devinbox_minio_data:/data
+    ports:
+      - "127.0.0.1:9001:9001"
+    networks:
+      - devinbox-network
+
+volumes:
+  devinbox_minio_data:

@@ -1,7 +1,8 @@
 """App settings, overridable via environment variables (see .env.example)."""
 
 from typing import Optional
-from pydantic_settings import BaseSettings
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import structlog
 
 logger = structlog.get_logger()
@@ -23,11 +24,28 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite:///./data/devinbox.db"
 
-    # Qwen Cloud (OpenAI-compatible endpoint)
-    QWEN_BASE_URL: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    QWEN_MODEL: str = "qwen3.7-plus"
-    QWEN_MAX_TOKENS: int = 4096
-    QWEN_TEMPERATURE: float = 0.2
+    # LLM provider (any OpenAI-compatible endpoint). Presets: qwen | gemini |
+    # groq | openrouter | openai | ollama | custom. Credentials are usually
+    # saved from the dashboard; env vars are the headless/CI alternative.
+    # Legacy QWEN_* variable names are still honoured.
+    LLM_PROVIDER: str = Field("", validation_alias=AliasChoices("LLM_PROVIDER"))
+    LLM_BASE_URL: str = Field("", validation_alias=AliasChoices("LLM_BASE_URL", "QWEN_BASE_URL"))
+    LLM_MODEL: str = Field("", validation_alias=AliasChoices("LLM_MODEL", "QWEN_MODEL"))
+    LLM_API_KEY: str = Field("", validation_alias=AliasChoices("LLM_API_KEY"))
+    LLM_FALLBACK_MODELS: str = ""  # comma-separated, tried in order if the primary fails
+    LLM_MAX_TOKENS: int = Field(4096, validation_alias=AliasChoices("LLM_MAX_TOKENS", "QWEN_MAX_TOKENS"))
+    LLM_TEMPERATURE: float = Field(0.2, validation_alias=AliasChoices("LLM_TEMPERATURE", "QWEN_TEMPERATURE"))
+    LLM_TIMEOUT_SECONDS: float = 60.0
+    # Max in-flight LLM requests PER PROCESS (each worker container has its
+    # own cap; total concurrency = workers x this). Protects provider rate limits.
+    LLM_MAX_CONCURRENCY: int = 4
+
+    # Webhook authentication. GitHub signs every delivery with this secret
+    # (X-Hub-Signature-256); unsigned/forged requests are rejected. It can
+    # also be saved from the dashboard (GitHub card). Set
+    # REQUIRE_WEBHOOK_SIGNATURE=false ONLY for local experiments.
+    WEBHOOK_SECRET: str = ""
+    REQUIRE_WEBHOOK_SIGNATURE: bool = True
 
     # GitHub / Agent behavior
     DEFAULT_BASE_BRANCH: str = "main"
@@ -38,6 +56,10 @@ class Settings(BaseSettings):
 
     # Security
     KEYS_DIR: str = "./data/keys"
+    # Where encrypted API keys live: auto (db when DATABASE_URL is Postgres, else files) | db | files
+    SECRETS_BACKEND: str = "auto"
+    # Optional: set the admin password at first startup so nobody can claim an unclaimed instance.
+    ADMIN_BOOTSTRAP_PASSWORD: str = ""
     # FIX #2 & #3: Validate SECRET_KEY in production
     TRUSTED_PROXY_IPS: str = ""  # Comma-separated list of proxy IPs to trust X-Forwarded-For from
 
@@ -47,16 +69,24 @@ class Settings(BaseSettings):
     # dashboard itself is served same-origin and doesn't need CORS at all.
     CORS_ALLOWED_ORIGINS: str = ""
 
-    # Alibaba Cloud OSS (audit trail archival)
-    ALIBABA_OSS_ENDPOINT: str = "https://oss-ap-southeast-1.aliyuncs.com"
-    ALIBABA_OSS_BUCKET: str = ""
-    ALIBABA_OSS_ENABLED: bool = False
+    # Audit-trail archival (cloud-agnostic). Backends: auto | none | local | s3
+    #   auto  -> S3-compatible store if credentials were saved in the dashboard, else local disk
+    #   local -> JSON/diffs written under AUDIT_ARCHIVE_LOCAL_DIR
+    #   s3    -> AWS S3, Cloudflare R2, MinIO, Backblaze, Supabase, Alibaba OSS (S3 API), ...
+    AUDIT_ARCHIVE_BACKEND: str = "auto"
+    AUDIT_ARCHIVE_LOCAL_DIR: str = "./data/audit"
+    S3_BUCKET: str = ""
+    S3_ENDPOINT_URL: str = ""      # blank = AWS S3
+    S3_REGION: str = ""
+    S3_ADDRESSING_STYLE: str = "auto"  # auto | path | virtual
 
     # Redis job queue (optional). If empty, webhook processing falls back
     # to FastAPI BackgroundTasks automatically -- Redis is an upgrade for
     # durability/scaling, never a hard requirement to run the app.
     REDIS_URL: str = ""
-    MAX_JOBS_PER_MINUTE: int = 20
+    MAX_JOBS_PER_MINUTE: int = Field(20, ge=1, le=10000)
+    AGENT_REQUIRED_LABEL: str = "devinbox"
+    MAX_WEBHOOK_BYTES: int = 1_000_000
 
     # If Qwen's own reported confidence in a generated fix is below this,
     # skip opening a PR entirely and flag it for a human to look at
@@ -66,9 +96,11 @@ class Settings(BaseSettings):
     # than a wrong guess shipped as a pull request.
     MIN_SOLUTION_CONFIDENCE: float = 0.5
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # extra="ignore": a shared .env (e.g. docker-compose-only variables such as
+    # MINIO_ROOT_PASSWORD) must not crash the app on startup.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", populate_by_name=True, extra="ignore",
+    )
 
     def __init__(self, **data):
         """Validate SECRET_KEY on initialization (FIX #3)."""

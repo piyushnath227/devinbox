@@ -1,0 +1,13 @@
+# Lint for correctness, not style churn: real bugs (undefined names, unused
+# imports/variables, bad comparisons, dangerous defaults), plus import hygiene.
+target-version = "py312"
+line-length = 120
+extend-exclude = ["backend/migrations/versions"]
+
+[lint]
+select = ["E9", "F", "B006", "B904"]
+ignore = ["B008"]  # FastAPI uses Depends() in defaults
+
+[lint.per-file-ignores]
+"tests/*" = ["F811"]
+"backend/migrations/env.py" = ["E402"]

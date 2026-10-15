@@ -16,18 +16,21 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.config import get_settings
-from app.models.database import init_db
+from app.models.database import init_db, is_sqlite
+from app.health import readiness, verify_schema_current_or_raise
+from app.bootstrap import bootstrap_admin
 from app.routes import dashboard_router, webhook_router, agent_router
 
 
-def configure_logging():
+def configure_logging(json_logs: bool = False):
     structlog.configure(
         processors=[
             structlog.stdlib.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
-            structlog.dev.ConsoleRenderer(),
+            # JSON in production so Loki/Datadog/CloudWatch can index fields; readable in dev.
+            structlog.processors.JSONRenderer() if json_logs else structlog.dev.ConsoleRenderer(),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         logger_factory=structlog.PrintLoggerFactory(),
@@ -42,6 +45,7 @@ _DEFAULT_SECRET_KEY = "change-this-to-a-random-secret-key-in-production"
 async def lifespan(app: FastAPI):
     logger = structlog.get_logger()
     settings = get_settings()
+    configure_logging(json_logs=not settings.DEBUG)  # runs under uvicorn too, not just `python main.py`
     logger.info("application_starting", app=settings.APP_NAME, version=settings.APP_VERSION)
 
     if settings.SECRET_KEY == _DEFAULT_SECRET_KEY:
@@ -56,6 +60,11 @@ async def lifespan(app: FastAPI):
     Path(settings.KEYS_DIR).mkdir(parents=True, exist_ok=True)
 
     init_db(settings.DATABASE_URL)
+    if not is_sqlite(settings.DATABASE_URL):
+        verify_schema_current_or_raise()
+    from app.config import get_key_manager
+    from app.services.crypto_service import get_crypto_service
+    bootstrap_admin(get_key_manager(), get_crypto_service(), settings)
     logger.info("application_started", host=settings.HOST, port=settings.PORT)
 
     yield
@@ -69,7 +78,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
-        description="AI-powered GitHub Issue-to-PR Autopilot built for the Global AI Hackathon with Qwen Cloud.",
+        description="AI-powered, cloud-agnostic GitHub Issue-to-PR Autopilot.",
         lifespan=lifespan,
         docs_url="/docs" if settings.DEBUG else None,
         redoc_url=None,
@@ -97,7 +106,7 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def landing(request: Request):
-        return templates.TemplateResponse("landing.html", {
+        return templates.TemplateResponse(request, "landing.html", {
             "request": request, "app_name": settings.APP_NAME, "app_version": settings.APP_VERSION,
         })
 
@@ -109,6 +118,15 @@ def create_app() -> FastAPI:
             "version": settings.APP_VERSION,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+
+    @app.get("/ready")
+    async def ready_check():
+        ok, components = readiness(settings.REDIS_URL, check_schema=not is_sqlite(settings.DATABASE_URL))
+        return JSONResponse(
+            {"status": "ready" if ok else "not_ready", "components": components,
+             "timestamp": datetime.now(timezone.utc).isoformat()},
+            status_code=200 if ok else 503,
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -126,6 +144,5 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    configure_logging()
     settings = get_settings()
     uvicorn.run("app.main:app", host=settings.HOST, port=settings.PORT, reload=settings.DEBUG)

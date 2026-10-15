@@ -1,0 +1,49 @@
+# Lightweight local setup for contributors: SQLite + Redis, dashboard on http://localhost:8000.
+#   docker compose -f docker-compose.dev.yml up --build
+# Non-Docker runs require app + Redis + worker + dispatcher (see docs/HARDENING.md).
+x-dev-env: &dev-env
+  DEBUG: "true"
+  SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me-0123456789abcdef}
+  DATABASE_URL: sqlite:///./data/devinbox.db
+  REDIS_URL: redis://redis:6379/0
+  KEYS_DIR: /app/data/keys
+  AUDIT_ARCHIVE_BACKEND: ${AUDIT_ARCHIVE_BACKEND:-local}
+  LLM_PROVIDER: ${LLM_PROVIDER:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+
+services:
+  app:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]
+    environment: *dev-env
+    volumes: [devinbox_data:/app/data]
+    depends_on: [redis]
+    networks: [devinbox-network]
+
+  worker:
+    build: .
+    command: python backend/worker.py
+    environment: *dev-env
+    volumes: [devinbox_data:/app/data]
+    depends_on: [redis]
+    networks: [devinbox-network]
+
+  dispatcher:
+    build: .
+    command: python backend/dispatcher.py
+    environment: *dev-env
+    volumes: [devinbox_data:/app/data]
+    depends_on: [app, redis]
+    networks: [devinbox-network]
+
+  redis:
+    image: redis:7-alpine
+    networks: [devinbox-network]
+
+volumes:
+  devinbox_data:
+
+networks:
+  devinbox-network:

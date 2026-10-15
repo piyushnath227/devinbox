@@ -8,7 +8,7 @@
 - Open `/dashboard/keys`
 - Paste Qwen Cloud key → Save → Test (green)
 - Paste GitHub token → Save → Test (shows authenticated user)
-- Briefly mention: "Every classification, diff, and decision is also archived to Alibaba Cloud OSS for a durable audit trail."
+- Briefly mention: "Every classification, diff, and decision is also archived to an S3-compatible bucket for a durable audit trail."
 
 **0:45–1:15 — Create a real issue and run it**
 - Go to a GitHub repo, open a new issue describing a real bug
@@ -32,4 +32,4 @@
 
 **2:35–3:00 — Close**
 "DevInbox: autonomous issue resolution with a human always in the loop, working on your own repos or forking to contribute to open source.
-Built with Qwen Cloud, FastAPI, and deployed on Alibaba Cloud. Thanks for watching!"
+Built with Qwen Cloud, FastAPI, and deployable on any Docker host. Thanks for watching!"

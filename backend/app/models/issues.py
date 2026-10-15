@@ -5,7 +5,7 @@ RECEIVED -> ANALYZING -> CLASSIFIED -> GENERATING -> PR_CREATED -> MERGED
 
 import enum
 from sqlalchemy import (
-    Column, String, Integer, Text, DateTime, Boolean, Float, Enum, func, JSON
+    Column, String, Integer, Text, DateTime, Float, Enum, func, JSON, UniqueConstraint, Index
 )
 from sqlalchemy.orm import relationship
 from .database import Base
@@ -29,6 +29,10 @@ class IssueStatus(str, enum.Enum):
 
 class IssueRecord(Base):
     __tablename__ = "issue_records"
+    __table_args__ = (
+        UniqueConstraint("repository", "issue_number", name="uq_issue_repository_number"),
+        Index("ix_issue_repository_status", "repository", "status"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     issue_number = Column(Integer, nullable=False)
@@ -46,6 +50,7 @@ class IssueRecord(Base):
     solution_plan = Column(Text, nullable=True)
 
     generated_diff = Column(Text, nullable=True)
+    checkpoint = Column(JSON, nullable=True)
     language = Column(String(50), nullable=True)
     modified_files = Column(JSON, nullable=True)
 
