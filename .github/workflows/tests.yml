@@ -106,6 +106,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate compose files
+        env:
+          # Placeholder for config validation only; never used by a running service.
+          MINIO_ROOT_PASSWORD: ci-only-minio-password
         run: |
           docker compose -f docker-compose.yml config -q
           docker compose -f docker-compose.dev.yml config -q
