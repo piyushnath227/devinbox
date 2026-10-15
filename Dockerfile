@@ -18,7 +18,8 @@ COPY backend/ ./backend/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY .env.example .env
 
-RUN groupadd -r devinbox && useradd -r -g devinbox devinbox \
+RUN chmod 0755 /usr/local/bin/entrypoint.sh \
+    && groupadd -r devinbox && useradd -r -g devinbox devinbox \
     && mkdir -p /app/data/keys \
     && chown -R devinbox:devinbox /app
 
