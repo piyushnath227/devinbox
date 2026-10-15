@@ -15,7 +15,7 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -53,7 +53,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       SECRET_KEY: ci-only-secret-key-not-used-anywhere-else
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -90,7 +90,7 @@ jobs:
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -104,7 +104,7 @@ jobs:
       SECRET_KEY: ci-only-secret-key
       POSTGRES_PASSWORD: ci-only-password
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate compose files
         env:
           # Placeholder for config validation only; never used by a running service.
