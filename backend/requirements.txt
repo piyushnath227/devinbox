@@ -15,6 +15,6 @@ openai==1.58.1
 PyGithub==2.5.0
 boto3==1.35.90
 jinja2==3.1.6
-structlog==24.4.0
+structlog==26.1.0
 redis==5.2.1
 rq==2.1.0
