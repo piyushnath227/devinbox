@@ -102,9 +102,9 @@ def test_retry_after_header_is_honoured():
     assert s._backoff(0, e) == 7.0
 
 
-def test_retry_after_is_capped():
+def test_long_retry_after_is_not_shortened():
     e = _api_error(openai.RateLimitError, 429, headers={"retry-after": "999"})
-    assert LLMService("k", "https://x/v1", "m")._backoff(0, e) == 30.0
+    assert LLMService("k", "https://x/v1", "m")._backoff(0, e) == 999.0
 
 
 # ---------- factory ----------
@@ -149,3 +149,55 @@ def test_factory_env_fallback_and_is_configured():
     assert build_llm_service(_km(), st).api_key == "envkey"
     assert is_llm_configured(_km(), st) is True
     assert is_llm_configured(_km(), _settings()) is False
+
+
+def test_groq_budget_pacing_and_tool_retry(svc):
+    s, create = svc
+    s.provider = "groq"
+    s.max_tokens = 900
+    s.min_request_interval = 61
+    s._sleep = MagicMock()
+    create.side_effect = [_resp(), _api_error(openai.RateLimitError, 429,
+                          "Please try again in 31.534285714s."), _resp()]
+    assert s._call_with_retry([], "sys")["success"]
+    assert s.generate_solution_with_tools("bug", "body", "bug", lambda *_: "")['success']
+    assert all(c.kwargs["max_tokens"] == 900 for c in create.call_args_list)
+    assert len(s._sleep.call_args_list) == 2
+    assert all(c.args[0] > 60 for c in s._sleep.call_args_list)
+
+
+def test_groq_oversized_request_does_not_retry_unchanged(svc):
+    s, create = svc
+    s.provider = "groq"
+    s.fallback_models = []
+    create.side_effect = _api_error(openai.RateLimitError, 429, "Request too large on input tokens per minute")
+    result = s.generate_solution_with_tools("bug", "body", "bug", lambda *_: "")
+    assert not result['success'] and 'token budget' in result['error']
+    assert create.call_count == 1
+
+
+def test_truncated_solution_is_not_accepted(svc):
+    s, create = svc
+    response = _resp()
+    response.choices[0].finish_reason = "length"
+    create.return_value = response
+    result = s.generate_solution_with_tools("bug", "body", "bug", lambda *_: "")
+    assert not result['success'] and 'output budget' in result['error']
+    assert create.call_count == 1
+
+
+def test_factory_applies_token_and_pacing_settings():
+    s = build_llm_service(_km(), _settings(LLM_PROVIDER="groq", LLM_MODEL="m", LLM_API_KEY="k",
+                          LLM_MAX_TOKENS=900, LLM_MIN_REQUEST_INTERVAL_SECONDS=61))
+    assert s.max_tokens == 900 and s.min_request_interval == 61
+
+
+def test_groq_long_quota_wait_fails_without_retry_storm(svc):
+    s, create = svc
+    s.provider = 'groq'
+    s._sleep = MagicMock()
+    create.side_effect = _api_error(openai.RateLimitError, 429, headers={'retry-after': '999'})
+    result = s.generate_solution_with_tools('bug', 'body', 'bug', lambda *_: '')
+    assert not result['success'] and 'quota exhausted' in result['error']
+    assert create.call_count == 1
+    s._sleep.assert_not_called()

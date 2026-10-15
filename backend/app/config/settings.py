@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # Max in-flight LLM requests PER PROCESS (each worker container has its
     # own cap; total concurrency = workers x this). Protects provider rate limits.
     LLM_MAX_CONCURRENCY: int = 4
+    LLM_MIN_REQUEST_INTERVAL_SECONDS: float = Field(0.0, ge=0, le=120)
 
     # Webhook authentication. GitHub signs every delivery with this secret
     # (X-Hub-Signature-256); unsigned/forged requests are rejected. It can

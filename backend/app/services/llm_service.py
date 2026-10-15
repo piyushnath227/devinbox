@@ -180,12 +180,18 @@ then respond with the final JSON object described above and nothing else."""
         timeout: float = 60.0,
         max_concurrency: int = 4,
         provider: str = "custom",
+        max_tokens: int = 4096,
+        min_request_interval: float = 0.0,
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.fallback_models = [m for m in (fallback_models or []) if m and m != model]
         self.provider = provider
+        self.max_tokens = max(1, int(max_tokens))
+        self.min_request_interval = max(0.0, min_request_interval)
+        self._next_request_at = 0.0
+        self._request_lock = threading.Lock()
         self.max_concurrency = max(1, int(max_concurrency))
         # max_retries=0: we own the retry policy (see _call_with_retry).
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
@@ -222,7 +228,10 @@ then respond with the final JSON object described above and nothing else."""
     def _backoff(self, attempt: int, e: Exception) -> float:
         hinted = self._retry_after(e)
         if hinted is not None:
-            return min(hinted, 30.0)
+            return max(0.0, hinted)
+        match = re.search(r"try again in ([0-9.]+)s", str(e), re.I)
+        if match:
+            return float(match.group(1)) + 0.5
         return min(2 ** attempt, 20) + random.uniform(0, 0.5)
 
     def _record_usage(self, response) -> int:
@@ -238,10 +247,34 @@ then respond with the final JSON object described above and nothing else."""
 
     def _create(self, **kwargs):
         """One raw completion call, behind the process-wide concurrency cap."""
-        with _slots(self.max_concurrency):
-            response = self.client.chat.completions.create(**kwargs)
-        self._record_usage(response)
-        return response
+        kwargs["max_tokens"] = min(kwargs.get("max_tokens", self.max_tokens), self.max_tokens)
+        # Serialize this client's requests, including tool turns. Other workers
+        # still obey provider 429 hints; this is not a distributed quota limiter.
+        with self._request_lock, _slots(self.max_concurrency):
+            for attempt in range(3):
+                delay = max(0.0, self._next_request_at - time.monotonic())
+                if delay:
+                    self._sleep(delay)
+                try:
+                    response = self.client.chat.completions.create(**kwargs)
+                except openai.RateLimitError as exc:
+                    if self.provider != "groq":
+                        raise
+                    # Oversized inputs cannot be fixed by waiting. Preserve the
+                    # source context and fail clearly rather than truncating it.
+                    if "request too large" in str(exc).lower():
+                        raise LLMConfigError(f"Request exceeds Groq token budget: {exc}") from exc
+                    delay = self._backoff(attempt, exc)
+                    if attempt == 2 or delay > 120:
+                        raise LLMConfigError(f"Groq quota exhausted; retry the job later: {exc}") from exc
+                    logger.warning("llm_rate_limit_wait", seconds=delay, attempt=attempt + 1)
+                    self._next_request_at = time.monotonic() + max(delay, self.min_request_interval)
+                    continue
+                self._next_request_at = time.monotonic() + self.min_request_interval
+                self._record_usage(response)
+                if getattr(response.choices[0], "finish_reason", None) == "length":
+                    raise LLMConfigError("LLM response exceeded the output budget; use a smaller issue or a model with a higher quota")
+                return response
 
     def _call_with_retry(
         self,
@@ -392,6 +425,9 @@ then respond with the final JSON object described above and nothing else."""
                 )
             except Exception as e:
                 logger.error("llm_tool_call_failed", iteration=iteration, error=str(e))
+                if isinstance(e, LLMConfigError):
+                    return {"success": False, "content": None, "tokens_used": total_tokens,
+                            "latency_ms": int((time.time() - start) * 1000), "error": str(e)}
                 # Fall back to the non-tool path rather than blocking the pipeline.
                 return self.generate_solution(title, body, classification, repository_context)
 
@@ -478,6 +514,8 @@ def build_llm_service(km, settings, require_key: bool = True) -> LLMService:
     return LLMService(
         api_key=api_key, base_url=base_url, model=model, fallback_models=fallbacks,
         timeout=settings.LLM_TIMEOUT_SECONDS, max_concurrency=settings.LLM_MAX_CONCURRENCY, provider=provider,
+        max_tokens=getattr(settings, "LLM_MAX_TOKENS", 4096),
+        min_request_interval=getattr(settings, "LLM_MIN_REQUEST_INTERVAL_SECONDS", 0.0),
     )
 
 
