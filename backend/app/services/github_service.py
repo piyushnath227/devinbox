@@ -55,7 +55,7 @@ class GitHubService:
             }
         except GithubException as e:
             logger.warning("read_file_failed", path=path, error=str(e))
-            return {"success": False, "error": f"Could not read '{path}': {e.data.get('message', str(e)) if e.data else str(e)}"}
+            return {"success": False, "status": e.status, "error": f"Could not read '{path}': {e.data.get('message', str(e)) if e.data else str(e)}"}
         except Exception as e:
             logger.error("read_file_unexpected_error", path=path, error=str(e))
             return {"success": False, "error": str(e)}

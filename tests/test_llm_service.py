@@ -160,7 +160,7 @@ def test_groq_budget_pacing_and_tool_retry(svc):
     create.side_effect = [_resp(), _api_error(openai.RateLimitError, 429,
                           "Please try again in 31.534285714s."), _resp()]
     assert s._call_with_retry([], "sys")["success"]
-    assert s.generate_solution_with_tools("bug", "body", "bug", lambda *_: "")['success']
+    assert s._create(model="primary", messages=[], max_tokens=4096, tools=s.REPO_TOOLS)
     assert all(c.kwargs["max_tokens"] == 900 for c in create.call_args_list)
     assert len(s._sleep.call_args_list) == 2
     assert all(c.args[0] > 60 for c in s._sleep.call_args_list)
@@ -201,3 +201,34 @@ def test_groq_long_quota_wait_fails_without_retry_storm(svc):
     assert not result['success'] and 'quota exhausted' in result['error']
     assert create.call_count == 1
     s._sleep.assert_not_called()
+
+
+def test_ungrounded_diff_is_read_regenerated_and_validated(svc):
+    import json
+    s, create = svc
+    good = {"changes": [{"file": "x.py", "code_diff": "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x=1\n+x=2\n"}], "confidence": 0.9}
+    bad = {**good, "changes": [{"file": "x.py", "code_diff": "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x=7\n+x=2\n"}]}
+    create.side_effect = [_resp(json.dumps(bad)), _resp(json.dumps(bad)), _resp(json.dumps(good))]
+    executor = MagicMock(return_value=json.dumps({"success": True, "content": "x=1\n", "truncated": False}))
+    result = s.generate_solution_with_tools("bug", "body", "bug", executor)
+    assert result['success'] and create.call_count == 3
+    executor.assert_called_once_with("read_file", {"path": "x.py"})
+    assert len(result['tool_calls']) == 1
+    assert 'x=1' in create.call_args_list[1].kwargs['messages'][3]['content']
+
+
+def test_tool_failure_never_falls_back_to_ungrounded_generation(svc):
+    s, create = svc
+    create.side_effect = _api_error(openai.BadRequestError, 400, 'tools unsupported')
+    s.generate_solution = MagicMock()
+    assert not s.generate_solution_with_tools('bug', 'body', 'bug', lambda *_: '')['success']
+    s.generate_solution.assert_not_called()
+
+
+@pytest.mark.parametrize('source', [{'success': False}, {'success': True, 'content': 'partial', 'truncated': True}])
+def test_unreadable_source_blocks_patch(svc, source):
+    import json
+    s, create = svc
+    create.return_value = _resp(json.dumps({'changes': [{'file': 'x.py', 'code_diff': 'bad'}], 'confidence': 0.9}))
+    result = s.generate_solution_with_tools('bug', 'body', 'bug', lambda *_: json.dumps(source))
+    assert not result['success'] and 'Cannot inspect' in result['error']

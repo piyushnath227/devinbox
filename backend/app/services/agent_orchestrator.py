@@ -102,6 +102,7 @@ class AgentOrchestrator:
             base_sha = source_repo.get_git_ref(f"heads/{base_branch}").object.sha
             repo_context = self._get_repository_context(repo_full_name)
             tool_executor = self._make_tool_executor(repo_full_name, base_sha)
+            self.llm.progress_callback = lambda message: self._log(issue, "generation_progress", message)
             sol_result = self.llm.generate_solution_with_tools(
                 title, body, issue.classification, tool_executor, repo_context
             )
@@ -145,7 +146,7 @@ class AgentOrchestrator:
 
         except (PatchError, ValueError) as e:
             self.db.rollback()
-            self._fail(issue, f"Validation failed: {e}")
+            self._fail(issue, f"Validation failed — no PR created: {e}")
             return {**self._result(issue, "failed", start_time), "retryable": False}
         except json.JSONDecodeError as e:
             logger.error("processing_json_error", issue_number=issue_number, error=str(e))
